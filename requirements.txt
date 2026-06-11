@@ -1,0 +1,7 @@
+ccxt
+pandas
+ta
+requests
+schedule
+groq
+alpaca-trade-api
