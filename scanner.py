@@ -21,6 +21,19 @@ ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET = os.environ.get("ALPACA_SECRET")
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
+# ---- NOT REALLY SURE ----
+required_vars = {
+    "BOT_TOKEN": BOT_TOKEN,
+    "CHAT_ID": CHAT_ID,
+    "GROQ_API_KEY": GROQ_API_KEY,
+    "ALPACA_API_KEY": ALPACA_API_KEY,
+    "ALPACA_SECRET": ALPACA_SECRET
+}
+
+for name, value in required_vars.items():
+    if not value:
+        raise ValueError(f"Missing environment variable: {name}")
+
 # ---- MINIMUM SCORES PER ASSET TYPE ----
 MIN_SCORES = {
     'crypto': {'confidence': 6, 'profitability': 6},  # Lowered from 8
@@ -116,7 +129,11 @@ def load_history():
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    requests.post(url, data=payload)
+    requests.post(
+    url,
+    data=payload,
+    timeout=10
+)
 
 def handle_telegram_commands():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
@@ -179,20 +196,20 @@ def handle_telegram_commands():
             time.sleep(5)
 
 # ---- DATA FETCHING ----
-def get_crypto_ohlcv(symbol, timeframe='1h', limit=200):
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
+def get_crypto_ohlcv(symbol, timeframe='1h', limit=500):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=500)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
 
 def get_alpaca_ohlcv(symbol):
-    bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=200).df
+    bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=500).df
     bars = bars.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
     return bars
 
 def get_forex_ohlcv(symbol):
     try:
-        bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=200).df
+        bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=500).df
         if bars.empty:
             return None
         # Alpaca forex uses different column names
@@ -286,25 +303,107 @@ def parse_ai_scores(ai_text):
 
 # ---- SIGNAL CHECK ----
 def check_signal(symbol, df, asset_type):
-    global total_signals_found
+    global total_signals_found, all_signals
+
     if df is None or df.empty:
         return
+
     df = add_indicators(df)
+
     latest = df.iloc[-1]
 
-    price = latest['close']
-    ema20 = latest['ema20']
-    ema50 = latest['ema50']
-    ema200 = latest['ema200']
-    rsi = latest['rsi']
-    volume = latest['volume']
-    vol_avg = latest['vol_avg']
-    macd = round(latest['macd'], 6)
-    macd_signal = round(latest['macd_signal'], 6)
-    macd_diff = latest['macd_diff']
-
-    if df is None or df.empty:
+    # Skip if indicators aren't ready
+    if pd.isna(latest['ema200']) or pd.isna(latest['rsi']):
         return
+
+    price = float(latest['close'])
+    ema20 = float(latest['ema20'])
+    ema50 = float(latest['ema50'])
+    ema200 = float(latest['ema200'])
+    rsi = float(latest['rsi'])
+    volume = float(latest['volume'])
+    vol_avg = float(latest['vol_avg'])
+    macd = float(latest['macd'])
+    macd_signal = float(latest['macd_signal'])
+
+    signal = None
+
+    # BUY conditions
+    if (
+        ema20 > ema50 and
+        ema50 > ema200 and
+        rsi > 55 and
+        macd > macd_signal
+    ):
+        signal = "BUY"
+
+    # SELL conditions
+    elif (
+        ema20 < ema50 and
+        ema50 < ema200 and
+        rsi < 45 and
+        macd < macd_signal
+    ):
+        signal = "SELL"
+
+    if not signal:
+        return
+
+    try:
+        ai_text = get_ai_analysis(
+            symbol,
+            signal,
+            price,
+            ema20,
+            ema50,
+            ema200,
+            rsi,
+            macd,
+            macd_signal,
+            volume,
+            vol_avg
+        )
+
+        scores = parse_ai_scores(ai_text)
+
+        confidence = scores['confidence']
+        profitability = scores['profitability']
+
+        threshold = HIGH_QUALITY_SCORES[asset_type]
+
+        if (
+            confidence >= threshold['confidence']
+            and profitability >= threshold['profitability']
+        ):
+
+            signal_data = {
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "symbol": symbol,
+                "asset_type": asset_type,
+                "signal": signal,
+                "price": round(price, 4),
+                "rsi": round(rsi, 2),
+                "macd": round(macd, 6),
+                **scores
+            }
+
+            new_signals.append(signal_data)
+            total_signals_found += 1
+
+            save_signal_to_csv({
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "time": datetime.now().strftime("%H:%M:%S"),
+                **signal_data
+            })
+
+            print(
+                f"✅ {signal} {symbol} "
+                f"(Profit {profitability}/10, "
+                f"Confidence {confidence}/10)"
+            )
+
+    except Exception as e:
+        print(f"Signal error for {symbol}: {e}")
 
 # ---- TELEGRAM SUMMARY ----
 def send_telegram_summary(signals):
@@ -1117,7 +1216,8 @@ def start_dashboard():
 # ---- MAIN SCANNER ----
 def run_scanner():
     global all_signals, last_scan_time
-    all_signals = []
+    new_signals = []
+    all_signals = new_signals
     last_scan_time = datetime.now().strftime('%d %b %Y %H:%M')
     print(f"\n🔍 Running full market scan — {last_scan_time}")
 
