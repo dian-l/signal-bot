@@ -111,7 +111,7 @@ def handle_telegram_commands():
                         f"Assets monitored: `{len(crypto_pairs) + len(stock_pairs)}`\n"
                         f"Signals this scan: `{len(all_signals)}`\n"
                         f"Total signals found: `{total_signals_found}`\n"
-                        f"Scanning every: `5 minutes`\n"
+                        f"Scanning every: `2 minutes`\n"
                         f"Status: `✅ Running`"
                     )
                     send_telegram(reply)
@@ -727,7 +727,7 @@ DASHBOARD_HTML = """
             </div>
             <div class="stat-card">
                 <div class="stat-label">Scan Interval</div>
-                <div class="stat-value">5m</div>
+                <div class="stat-value">2m</div>
                 <div class="stat-sub">Auto-refresh 30s</div>
             </div>
         </div>
@@ -1115,10 +1115,10 @@ print("📱 Telegram command listener started (/status /topsignals /help)")
 # Run scanner immediately
 run_scanner()
 
-# Schedule every 5 mins
-schedule.every(5).minutes.do(run_scanner)
+# Schedule every 2 mins
+schedule.every(2).minutes.do(run_scanner)
 
-print("\n⏰ Scanning every 5 mins. Press Ctrl+C to stop.")
+print("\n⏰ Scanning every 2 mins. Press Ctrl+C to stop.")
 
 while True:
     schedule.run_pending()
