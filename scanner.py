@@ -49,13 +49,13 @@ total_signals_found = 0
 crypto_pairs = [
     'BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD',
     'BNB/USD', 'ADA/USD', 'AVAX/USD', 'LINK/USD', 'INJ/USD',
-    'FET/USD', 'ARB/USD', 'OP/USD', 'TIA/USD', 'MATIC/USD',
+    'FET/USD', 'ARB/USD', 'OP/USD', 'TIA/USD', 'POLYGON/USD',
     'DOT/USD', 'ATOM/USD', 'LTC/USD', 'UNI/USD', 'NEAR/USD',
-    'RENDER/USD', 'BLUR/USD', 'WLD/USD', 'LIDO/USD', 'PEPE/USD',
+    'RENDER/USD', 'BLUR/USD', 'WLD/USD', 'LDO/USD', 'PEPE/USD',
     'SHIB/USD', 'BONK/USD', 'WIF/USD', 'FLOKI/USD', 'AAVE/USD',
-    'CURVE/USD', 'GMX/USD', 'SCROLL/USD', 'STARKNET/USD', 'ZEC/USD',
-    'MONERO/USD', 'BCH/USD', 'ETC/USD', 'XLM/USD', 'VET/USD',
-    'KSM/USD', 'THETA/USD', 'ONE/USD', 'AGIX/USD', 'LEND/USD',
+    'CRVE/USD', 'GMX/USD', 'APT/USD', 'SUI/USD', 'ZEC/USD',
+    'XMR/USD', 'BCH/USD', 'ETC/USD', 'XLM/USD', 'VET/USD',
+    'KSM/USD', 'THETA/USD', 'ONE/USD', 'AGIX/USD', 'RAIN/USD',
     'CHZ/USD', 'JASMY/USD', 'JUP/USD', 'SEI/USD', 'HBAR/USD'
 ]
 
@@ -73,17 +73,16 @@ stock_pairs = [
 ]
 
 forex_pairs = [
-    'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD',
-    'USD/CAD', 'NZD/USD', 'EUR/GBP', 'EUR/JPY', 'EUR/CHF',
-    'GBP/JPY', 'GBP/CHF', 'AUD/JPY', 'CAD/JPY', 'CHF/JPY',
-    'EUR/AUD', 'EUR/NZD', 'GBP/AUD', 'AUD/NZD', 'USD/SEK',
-    'USD/NOK', 'USD/DKK', 'EUR/SEK', 'EUR/NOK', 'EUR/DKK',
-    'GBP/SEK', 'GBP/NOK', 'USD/SGD', 'USD/HKD', 'AUD/SGD',
-    'EUR/SGD', 'GBP/SGD', 'EUR/HKD', 'AUD/HKD', 'NZD/CAD',
-    'NZD/CHF', 'NZD/JPY', 'GBP/CAD', 'GBP/NZD', 'CAD/CHF',
-    'AUD/NZD', 'AUD/CAD', 'AUD/CHF', 'NZD/SGD', 'EUR/CAD',
-    'GBP/NZD', 'CHF/SGD', 'CAD/SGD', 'JPY/SGD', 'HKD/JPY',
-    'SGD/JPY', 'AUD/HKD', 'NZD/HKD', 'CAD/HKD', 'CHF/HKD'
+    'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
+    'USDCAD', 'NZDUSD', 'EURGBP', 'EURJPY', 'EURCHF',
+    'GBPJPY', 'GBPCHF', 'AUDJPY', 'CADJPY', 'CHFJPY',
+    'EURAUD', 'EURNZD', 'GBPAUD', 'AUDNZD', 'USDSEK',
+    'USDNOK', 'USDDKK', 'EURSEK', 'EURNOK', 'EURDKK',
+    'GBPSEK', 'GBPNOK', 'USDSGD', 'USDHKD', 'AUDSGD',
+    'EURSGD', 'GBPSGD', 'EURHKD', 'AUDHKD', 'NZDCAD',
+    'NZDCHF', 'NZDJPY', 'GBPCAD', 'GBPNZD', 'CADCHF',
+    'AUDNZD', 'AUDCAD', 'AUDCHF', 'NZDSGD', 'EURCAD',
+    'GBPNZD', 'CHFSGD', 'CADSGD', 'JPYSGD', 'HKDJPY'
 ]
 
 # ---- CSV HISTORY ----
@@ -753,7 +752,7 @@ DASHBOARD_HTML = """
             </div>
             <div class="stat-card">
                 <div class="stat-label">Assets Monitored</div>
-                <div class="stat-value">150</div>
+                <div class="stat-value">0</div>
                 <div class="stat-sub">Crypto, Stocks, ETFs, Forex</div>
             </div>
             <div class="stat-card">
