@@ -1,3 +1,5 @@
+from collections import deque
+
 import ccxt
 import pandas as pd
 import ta
@@ -37,20 +39,20 @@ HISTORY_FIELDS = [
 ]
 
 # Initialize clients
-exchange = ccxt.binance()
+exchange = ccxt.kraken()
 client = Groq(api_key=GROQ_API_KEY)
 alpaca = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET, ALPACA_BASE_URL)
 
-all_signals = []
+all_signals = deque(maxlen=100)
 last_scan_time = "Never"
 total_signals_found = 0
 
 # ---- ASSET LISTS ----
 crypto_pairs = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT',
-    'BNB/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'INJ/USDT',
-    'FET/USDT', 'ARB/USDT', 'OP/USDT', 'TIA/USDT', 'MATIC/USDT',
-    'DOT/USDT', 'ATOM/USDT', 'LTC/USDT', 'UNI/USDT', 'NEAR/USDT'
+    'BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD',
+    'BNB/USD', 'ADA/USD', 'AVAX/USD', 'LINK/USD', 'INJ/USD',
+    'FET/USD', 'ARB/USD', 'OP/USD', 'TIA/USD', 'MATIC/USD',
+    'DOT/USD', 'ATOM/USD', 'LTC/USD', 'UNI/USD', 'NEAR/USD'
 ]
 
 stock_pairs = [
