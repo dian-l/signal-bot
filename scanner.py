@@ -287,6 +287,8 @@ def parse_ai_scores(ai_text):
 # ---- SIGNAL CHECK ----
 def check_signal(symbol, df, asset_type):
     global total_signals_found
+    if df is None or df.empty:
+        return
     df = add_indicators(df)
     latest = df.iloc[-1]
 
@@ -301,66 +303,8 @@ def check_signal(symbol, df, asset_type):
     macd_signal = round(latest['macd_signal'], 6)
     macd_diff = latest['macd_diff']
 
-    signal = None
-
-    # BUY: price above EMA20, RSI not overbought, volume strong, MACD positive
-    if price > ema20 and rsi < 70 and volume > vol_avg * 0.8 and macd_diff > 0:
-        signal = "BUY 🟢"
-    # SELL: price below EMA20, RSI not oversold, volume strong, MACD negative
-    elif price < ema20 and rsi > 30 and volume > vol_avg * 0.8 and macd_diff < 0:
-        signal = "SELL 🔴"
-
-    if signal:
-        print(f"{symbol} — {signal} detected, getting AI analysis...")
-        ai_text = get_ai_analysis(symbol, signal, price, ema20, ema50, ema200, rsi, macd, macd_signal, volume, vol_avg)
-        scores = parse_ai_scores(ai_text)
-
-        # Per asset type minimum filter
-        min_conf = MIN_SCORES.get(asset_type, {}).get('confidence', 7)
-        min_prof = MIN_SCORES.get(asset_type, {}).get('profitability', 7)
-
-        if scores['confidence'] >= min_conf and scores['profitability'] >= min_prof:
-            now = datetime.now()
-            signal_data = {
-                'symbol': symbol,
-                'signal': signal,
-                'price': round(price, 4),
-                'rsi': round(rsi, 2),
-                'macd': macd,
-                'asset_type': asset_type,
-                'confidence': scores['confidence'],
-                'profitability': scores['profitability'],
-                'safety': scores['safety'],
-                'risk': scores['risk'],
-                'entry': scores['entry'],
-                'stop_loss': scores['stop_loss'],
-                'take_profit': scores['take_profit'],
-                'reason': scores['reason'],
-                'timestamp': now.strftime('%H:%M:%S'),
-                'date': now.strftime('%Y-%m-%d'),
-                'time': now.strftime('%H:%M:%S'),
-            }
-            all_signals.append(signal_data)
-            save_signal_to_csv(signal_data)
-            total_signals_found += 1
-            print(f"{symbol} — ✅ Signal! (Conf: {scores['confidence']}/10, Prof: {scores['profitability']}/10)")
-
-            # NEW - Check if it's high quality and send special alert
-            high_qual_conf = HIGH_QUALITY_SCORES.get(asset_type, {}).get('confidence', 7)
-            high_qual_prof = HIGH_QUALITY_SCORES.get(asset_type, {}).get('profitability', 7)
-
-            if scores['confidence'] >= high_qual_conf and scores['profitability'] >= high_qual_prof:
-                high_quality_signals.append(signal_data)
-                # Send special Telegram alert
-                special_msg = (
-                    f"🌟 *HIGH QUALITY SIGNAL!*\n\n"
-                    f"*{signal_data['signal']} {signal_data['symbol']}*\n"
-                    f"💰 Profit: `{signal_data['profitability']}/10` | 🛡 Safety: `{signal_data['safety']}/10`\n"
-                    f"📍 Entry: `{signal_data['entry']}` | SL: `{signal_data['stop_loss']}` | TP: `{signal_data['take_profit']}`\n"
-                    f"💡 _{signal_data['reason']}_"
-                )
-                send_telegram(special_msg)
-                print(f"{symbol} — 🌟 HIGH QUALITY SIGNAL SENT TO TELEGRAM!")
+    if df is None or df.empty:
+        return
 
 # ---- TELEGRAM SUMMARY ----
 def send_telegram_summary(signals):
