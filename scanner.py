@@ -1,5 +1,3 @@
-from collections import deque
-
 import ccxt
 import pandas as pd
 import ta
@@ -43,7 +41,7 @@ exchange = ccxt.kraken()
 client = Groq(api_key=GROQ_API_KEY)
 alpaca = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET, ALPACA_BASE_URL)
 
-all_signals = deque(maxlen=100)
+all_signals = []
 last_scan_time = "Never"
 total_signals_found = 0
 
@@ -80,11 +78,12 @@ forex_pairs = [
     'GBP/JPY', 'GBP/CHF', 'AUD/JPY', 'CAD/JPY', 'CHF/JPY',
     'EUR/AUD', 'EUR/NZD', 'GBP/AUD', 'AUD/NZD', 'USD/SEK',
     'USD/NOK', 'USD/DKK', 'EUR/SEK', 'EUR/NOK', 'EUR/DKK',
-    'GBP/SEK', 'GBP/NOK', 'USD/SGD', 'USD/HKD', 'USD/INR',
-    'EUR/SGD', 'EUR/HKD', 'GBP/SGD', 'AUD/SGD', 'USD/ZAR',
-    'EUR/ZAR', 'GBP/ZAR', 'USD/MXN', 'EUR/MXN', 'GBP/MXN',
-    'USD/BRL', 'EUR/BRL', 'USD/TRY', 'EUR/TRY', 'USD/RUB',
-    'EUR/RUB', 'GBP/RUB', 'AUD/CAD', 'NZD/JPY', 'CAD/CHF'
+    'GBP/SEK', 'GBP/NOK', 'USD/SGD', 'USD/HKD', 'AUD/SGD',
+    'EUR/SGD', 'GBP/SGD', 'EUR/HKD', 'AUD/HKD', 'NZD/CAD',
+    'NZD/CHF', 'NZD/JPY', 'GBP/CAD', 'GBP/NZD', 'CAD/CHF',
+    'AUD/NZD', 'AUD/CAD', 'AUD/CHF', 'NZD/SGD', 'EUR/CAD',
+    'GBP/NZD', 'CHF/SGD', 'CAD/SGD', 'JPY/SGD', 'HKD/JPY',
+    'SGD/JPY', 'AUD/HKD', 'NZD/HKD', 'CAD/HKD', 'CHF/HKD'
 ]
 
 # ---- CSV HISTORY ----
@@ -754,8 +753,8 @@ DASHBOARD_HTML = """
             </div>
             <div class="stat-card">
                 <div class="stat-label">Assets Monitored</div>
-                <div class="stat-value">37</div>
-                <div class="stat-sub">Crypto, Stocks, ETFs</div>
+                <div class="stat-value">150</div>
+                <div class="stat-sub">Crypto, Stocks, ETFs, Forex</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Scan Interval</div>
