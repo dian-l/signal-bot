@@ -141,7 +141,7 @@ def handle_telegram_commands():
                     reply = (
                         f"*📊 Bot Status*\n"
                         f"Last scan: `{last_scan_time}`\n"
-                        f"Assets monitored: `{len(crypto_pairs) + len(stock_pairs)}`\n"
+                        f"Assets monitored: `{len(crypto_pairs) + len(stock_pairs) + len(forex_pairs)}`\n"
                         f"Signals this scan: `{len(all_signals)}`\n"
                         f"Total signals found: `{total_signals_found}`\n"
                         f"Scanning every: `2 minutes`\n"
@@ -765,8 +765,8 @@ DASHBOARD_HTML = """
                 <div class="stat-sub">All time</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Assets Monitored</div>
-                <div class="stat-value">0</div>
+                <div class="stat-label">Assets Monitored p/m</div>
+                <div class="stat-value">150</div>
                 <div class="stat-sub">Crypto, Stocks, ETFs, Forex</div>
             </div>
             <div class="stat-card">
@@ -868,7 +868,7 @@ DASHBOARD_HTML = """
 
             <div class="guide-full">
                 <h2>What This Bot Does</h2>
-                <p>Trade Grid Analysis scans 37 assets every 5 minutes across crypto, stocks, commodities and indices. Each potential trade is scored by AI on profitability, safety, risk and confidence. Only high quality signals (8/10 for crypto, 7/10 for stocks) are shown here and sent to your Telegram.</p>
+                <p>Trade Grid Analysis scans 150 assets every 2 minutes across crypto, stocks, commodities and indices. Each potential trade is scored by AI on profitability, safety, risk and confidence. Only high quality signals (8/10 for crypto, 7/10 for stocks) are shown here and sent to your Telegram.</p>
                 <p>The bot tells you when to trade and gives you entry, stop loss and take profit levels. You then manually place that trade on your platform.</p>
             </div>
 
