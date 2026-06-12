@@ -52,14 +52,39 @@ crypto_pairs = [
     'BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD',
     'BNB/USD', 'ADA/USD', 'AVAX/USD', 'LINK/USD', 'INJ/USD',
     'FET/USD', 'ARB/USD', 'OP/USD', 'TIA/USD', 'MATIC/USD',
-    'DOT/USD', 'ATOM/USD', 'LTC/USD', 'UNI/USD', 'NEAR/USD'
+    'DOT/USD', 'ATOM/USD', 'LTC/USD', 'UNI/USD', 'NEAR/USD',
+    'RENDER/USD', 'BLUR/USD', 'WLD/USD', 'LIDO/USD', 'PEPE/USD',
+    'SHIB/USD', 'BONK/USD', 'WIF/USD', 'FLOKI/USD', 'AAVE/USD',
+    'CURVE/USD', 'GMX/USD', 'SCROLL/USD', 'STARKNET/USD', 'ZEC/USD',
+    'MONERO/USD', 'BCH/USD', 'ETC/USD', 'XLM/USD', 'VET/USD',
+    'KSM/USD', 'THETA/USD', 'ONE/USD', 'AGIX/USD', 'LEND/USD',
+    'CHZ/USD', 'JASMY/USD', 'JUP/USD', 'SEI/USD', 'HBAR/USD'
 ]
 
 stock_pairs = [
     'AAPL', 'TSLA', 'NVDA', 'AMZN', 'META',
     'GOOGL', 'MSFT', 'AMD', 'NFLX', 'COIN',
     'SPY', 'QQQ', 'DIA', 'GLD', 'SLV',
-    'USO', 'BNO'
+    'USO', 'BNO', 'TLT', 'AGG', 'VIX',
+    'SOFI', 'RIOT', 'MARA', 'MSTR', 'CLSK',
+    'UPRO', 'TQQQ', 'SSO', 'EEM', 'ARKK',
+    'ARKW', 'XLK', 'XLV', 'XLF', 'XLE',
+    'XLI', 'XLY', 'XLP', 'XLRE', 'XLU',
+    'SCHX', 'SCHB', 'SCHF', 'SCHE', 'SCHP',
+    'VTSAX', 'VTI', 'VOO', 'VTIAX', 'BRK.B'
+]
+
+forex_pairs = [
+    'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD',
+    'USD/CAD', 'NZD/USD', 'EUR/GBP', 'EUR/JPY', 'EUR/CHF',
+    'GBP/JPY', 'GBP/CHF', 'AUD/JPY', 'CAD/JPY', 'CHF/JPY',
+    'EUR/AUD', 'EUR/NZD', 'GBP/AUD', 'AUD/NZD', 'USD/SEK',
+    'USD/NOK', 'USD/DKK', 'EUR/SEK', 'EUR/NOK', 'EUR/DKK',
+    'GBP/SEK', 'GBP/NOK', 'USD/SGD', 'USD/HKD', 'USD/INR',
+    'EUR/SGD', 'EUR/HKD', 'GBP/SGD', 'AUD/SGD', 'USD/ZAR',
+    'EUR/ZAR', 'GBP/ZAR', 'USD/MXN', 'EUR/MXN', 'GBP/MXN',
+    'USD/BRL', 'EUR/BRL', 'USD/TRY', 'EUR/TRY', 'USD/RUB',
+    'EUR/RUB', 'GBP/RUB', 'AUD/CAD', 'NZD/JPY', 'CAD/CHF'
 ]
 
 # ---- CSV HISTORY ----
@@ -155,6 +180,11 @@ def get_crypto_ohlcv(symbol, timeframe='1h', limit=200):
     return df
 
 def get_alpaca_ohlcv(symbol):
+    bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=200).df
+    bars = bars.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+    return bars
+
+def get_forex_ohlcv(symbol):
     bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=200).df
     bars = bars.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
     return bars
@@ -1094,6 +1124,14 @@ def run_scanner():
             check_signal(symbol, df, 'stock')
         except Exception as e:
             print(f"Error {symbol}: {e}")
+
+    print("\n💱 Scanning Forex...")
+    for pair in forex_pairs:
+        try:
+            df = get_forex_ohlcv(pair)
+            check_signal(pair, df, 'forex')
+        except Exception as e:
+            print(f"Error {pair}: {e}")
 
     if all_signals:
         send_telegram_summary(all_signals)
