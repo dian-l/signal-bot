@@ -61,9 +61,9 @@ crypto_pairs = [
     'DOT/USD', 'ATOM/USD', 'LTC/USD', 'UNI/USD', 'NEAR/USD',
     'RENDER/USD', 'BLUR/USD', 'WLD/USD', 'LDO/USD', 'PEPE/USD',
     'SHIB/USD', 'BONK/USD', 'WIF/USD', 'FLOKI/USD', 'AAVE/USD',
-    'CRVE/USD', 'GMX/USD', 'APT/USD', 'SUI/USD', 'ZEC/USD',
+    'CRV/USD', 'GMX/USD', 'APT/USD', 'SUI/USD', 'ZEC/USD',
     'XMR/USD', 'BCH/USD', 'ETC/USD', 'XLM/USD', 'VET/USD',
-    'KSM/USD', 'THETA/USD', 'ONE/USD', 'AGIX/USD', 'RAIN/USD',
+    'KSM/USD', 'LUNA/USD', 'WAVES/USD', 'FIL/USD', 'RAIN/USD',
     'CHZ/USD', 'JASMY/USD', 'JUP/USD', 'SEI/USD', 'HBAR/USD'
 ]
 
