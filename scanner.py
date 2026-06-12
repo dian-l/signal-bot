@@ -43,9 +43,9 @@ MIN_SCORES = {
 
 # NEW - High quality thresholds for special alerts
 HIGH_QUALITY_SCORES = {
-    'crypto': {'confidence': 8, 'profitability': 8},
-    'stock':  {'confidence': 7, 'profitability': 7},
-    'forex':  {'confidence': 7, 'profitability': 7},
+    'crypto': {'confidence': 7, 'profitability': 7},
+    'stock':  {'confidence': 6, 'profitability': 6},
+    'forex':  {'confidence': 6, 'profitability': 6},
 }
 
 # ---- CSV HISTORY FILE ----
@@ -303,6 +303,7 @@ def parse_ai_scores(ai_text):
 
 # ---- SIGNAL CHECK ----
 def check_signal(symbol, df, asset_type):
+    print(f"{symbol} RSI: {rsi} EMA20: {ema20} EMA50: {ema50}")
     global total_signals_found, all_signals
 
     if df is None or df.empty:
@@ -387,7 +388,8 @@ def check_signal(symbol, df, asset_type):
                 **scores
             }
 
-            new_signals.append(signal_data)
+            print("📥 SIGNAL STORED:", symbol)
+            all_signals.append(signal_data) # type: ignore
             total_signals_found += 1
 
             save_signal_to_csv({
@@ -1230,6 +1232,7 @@ def run_scanner():
             print("✓")
         except Exception as e:
             print(f"✗ Error: {e}")
+        print(f"Fetched crypto: {pair} → rows: {len(df)}")
 
     print(f"\n📈 Scanning {len(stock_pairs)} Stock pairs...")
     for i, symbol in enumerate(stock_pairs, 1):
@@ -1241,6 +1244,7 @@ def run_scanner():
             print("✓")
         except Exception as e:
             print(f"✗ Error: {e}")
+        print(f"Fetched stock: {symbol} → rows: {len(df)}")
 
     print(f"\n💱 Scanning {len(forex_pairs)} Forex pairs...")
     for i, pair in enumerate(forex_pairs, 1):
@@ -1252,6 +1256,9 @@ def run_scanner():
             print("✓")
         except Exception as e:
             print(f"✗ Error: {e}")
+        print(f"Fetched forex: {pair} → rows: {len(df)}")
+
+        
 
     if all_signals:
         send_telegram_summary(all_signals)
