@@ -1121,35 +1121,44 @@ def run_scanner():
     last_scan_time = datetime.now().strftime('%d %b %Y %H:%M')
     print(f"\n🔍 Running full market scan — {last_scan_time}")
 
-    print("\n🪙 Scanning Crypto...")
-    for pair in crypto_pairs:
+    print(f"\n🪙 Scanning {len(crypto_pairs)} Crypto pairs...")
+    for i, pair in enumerate(crypto_pairs, 1):
         try:
+            print(f"  [{i}/{len(crypto_pairs)}] {pair}...", end=' ', flush=True)
             df = get_crypto_ohlcv(pair)
             check_signal(pair, df, 'crypto')
+            print("✓")
         except Exception as e:
-            print(f"Error {pair}: {e}")
+            print(f"✗ Error: {e}")
 
-    print("\n📈 Scanning Stocks, Commodities & Indices...")
-    for symbol in stock_pairs:
+    print(f"\n📈 Scanning {len(stock_pairs)} Stock pairs...")
+    for i, symbol in enumerate(stock_pairs, 1):
         try:
+            print(f"  [{i}/{len(stock_pairs)}] {symbol}...", end=' ', flush=True)
             df = get_alpaca_ohlcv(symbol)
-            check_signal(symbol, df, 'stock')
+            if df is not None and not df.empty:
+                check_signal(symbol, df, 'stock')
+            print("✓")
         except Exception as e:
-            print(f"Error {symbol}: {e}")
+            print(f"✗ Error: {e}")
 
-    print("\n💱 Scanning Forex...")
-    for pair in forex_pairs:
+    print(f"\n💱 Scanning {len(forex_pairs)} Forex pairs...")
+    for i, pair in enumerate(forex_pairs, 1):
         try:
+            print(f"  [{i}/{len(forex_pairs)}] {pair}...", end=' ', flush=True)
             df = get_forex_ohlcv(pair)
-            check_signal(pair, df, 'forex')
+            if df is not None and not df.empty:
+                check_signal(pair, df, 'forex')
+            print("✓")
         except Exception as e:
-            print(f"Error {pair}: {e}")
+            print(f"✗ Error: {e}")
 
     if all_signals:
         send_telegram_summary(all_signals)
         print(f"\n✅ Scan complete — {len(all_signals)} high quality signals found!")
     else:
         print("\n✅ Scan complete — No high quality signals this round")
+        print(f"   Monitored: {len(crypto_pairs)} crypto + {len(stock_pairs)} stocks + {len(forex_pairs)} forex = {len(crypto_pairs) + len(stock_pairs) + len(forex_pairs)} total")
 
 # ---- START ----
 init_csv()
