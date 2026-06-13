@@ -317,8 +317,8 @@ def parse_ai_scores(text: str) -> dict:
 # ============================================================
 # SIGNAL CHECK  (the core function — fully implemented)
 # ============================================================
-def check_signal(symbol: str, df: pd.DataFrame | None, asset_type: str):
-    global total_signals_found
+def def check_signal(symbol: str, df, asset_type: str):
+    global total_signals_found, all_signals
 
     if df is None or df.empty or len(df) < 210:
         return
