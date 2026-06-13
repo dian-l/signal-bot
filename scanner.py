@@ -1,8 +1,3 @@
-"""
-Trade Grid Analysis — scanner.py
-Full upgrade: Signal Quality, AI Improvements, Dashboard, Telegram, Paper Trading, Reliability
-"""
-
 import ccxt
 import pandas as pd
 import ta
@@ -28,10 +23,10 @@ try:
     ALPACA_AVAILABLE = True
 except ImportError:
     ALPACA_AVAILABLE = False
-    print("⚠️  alpaca-trade-api not installed — stock/forex scanning disabled")
+    print("[WARN] alpaca-trade-api not installed - stock/forex scanning disabled")
 
 # ════════════════════════════════════════════════════════════════════════════
-# LOGGING
+# LOGGING  — plain ASCII only so Railway never miscolours lines
 # ════════════════════════════════════════════════════════════════════════════
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +37,45 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger("tradegrid")
+
+# ════════════════════════════════════════════════════════════════════════════
+# SYSTEM HEALTH TRACKER
+# Every major function reports its status here so the dashboard can display it
+# ════════════════════════════════════════════════════════════════════════════
+health_lock = threading.Lock()
+system_health = {
+    # key -> { status: 'ok'|'warn'|'error'|'idle', last_run: str, message: str, count: int }
+    "scanner":           {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "crypto_fetch":      {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "stock_fetch":       {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "forex_fetch":       {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "indicators":        {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "ai_analysis":       {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "ai_cache":          {"status": "idle", "last_run": "Never",   "message": "Cache empty",          "count": 0},
+    "mtf_confirm":       {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "signal_check":      {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "telegram_send":     {"status": "idle", "last_run": "Never",   "message": "Not yet sent",         "count": 0},
+    "telegram_commands": {"status": "idle", "last_run": "Never",   "message": "Listener not started", "count": 0},
+    "paper_trade":       {"status": "idle", "last_run": "Never",   "message": "No trades yet",        "count": 0},
+    "csv_write":         {"status": "idle", "last_run": "Never",   "message": "Not yet written",      "count": 0},
+    "csv_read":          {"status": "idle", "last_run": "Never",   "message": "Not yet read",         "count": 0},
+    "unit_tests":        {"status": "idle", "last_run": "Never",   "message": "Not yet run",          "count": 0},
+    "web_server":        {"status": "idle", "last_run": "Never",   "message": "Not yet started",      "count": 0},
+    "alpaca_connection": {"status": "idle", "last_run": "Never",   "message": "Not attempted",        "count": 0},
+    "exchange_connection":{"status": "idle","last_run": "Never",   "message": "Not attempted",        "count": 0},
+}
+
+def update_health(key, status, message, increment=True):
+    """Update a health entry. status: 'ok' | 'warn' | 'error' | 'idle'"""
+    ts = datetime.now().strftime("%H:%M:%S")
+    with health_lock:
+        if key in system_health:
+            system_health[key]["status"]   = status
+            system_health[key]["last_run"] = ts
+            system_health[key]["message"]  = message
+            if increment:
+                system_health[key]["count"] += 1
+    log.info("[HEALTH] %-22s -> %-5s | %s", key, status.upper(), message)
 
 # ════════════════════════════════════════════════════════════════════════════
 # CONFIG — all from environment variables
@@ -63,7 +97,7 @@ if missing:
     raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
 if ALPACA_AVAILABLE and (not ALPACA_API_KEY or not ALPACA_SECRET):
-    log.warning("ALPACA_API_KEY/SECRET not set — stock/forex disabled")
+    log.warning("[CONFIG] ALPACA_API_KEY/SECRET not set - stock/forex disabled")
     ALPACA_AVAILABLE = False
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -99,7 +133,7 @@ HISTORY_FIELDS = [
     'support', 'resistance', 'volume_spike', 'breakout',
     'confidence', 'profitability', 'safety', 'risk',
     'entry', 'stop_loss', 'take_profit', 'reason',
-    'outcome', 'pnl'                          # filled later by paper trade tracking
+    'outcome', 'pnl'
 ]
 TRADE_FIELDS = [
     'date', 'time', 'symbol', 'direction', 'qty', 'entry',
@@ -122,7 +156,7 @@ scan_count          = 0
 
 # AI response cache  { hash(prompt_key) -> (timestamp, scores_dict) }
 ai_cache    = {}
-CACHE_TTL   = 300   # seconds — reuse AI response for same setup within 5 min
+CACHE_TTL   = 300   # seconds
 
 # ════════════════════════════════════════════════════════════════════════════
 # API CLIENTS
@@ -130,42 +164,72 @@ CACHE_TTL   = 300   # seconds — reuse AI response for same setup within 5 min
 exchange = ccxt.kraken()
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+try:
+    exchange.load_markets()
+    update_health("exchange_connection", "ok", "Kraken connected and markets loaded")
+except Exception as _ex_err:
+    update_health("exchange_connection", "error", f"Kraken connection failed: {_ex_err}")
+
 alpaca = None
 if ALPACA_AVAILABLE:
     try:
         alpaca = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET, ALPACA_BASE_URL)
-        log.info("✅ Alpaca connected")
+        log.info("[ALPACA] Connected to %s", ALPACA_BASE_URL)
+        update_health("alpaca_connection", "ok", f"Connected to {ALPACA_BASE_URL}")
     except Exception as e:
-        log.warning(f"Alpaca connection failed: {e}")
+        log.warning("[ALPACA] Connection failed: %s", e)
+        update_health("alpaca_connection", "error", f"Connection failed: {e}")
         ALPACA_AVAILABLE = False
+else:
+    update_health("alpaca_connection", "warn", "Alpaca disabled (no API keys or package missing)", increment=False)
 
 # ════════════════════════════════════════════════════════════════════════════
-# ASSET LISTS
+# ASSET LISTS — 50 each, 150 total
 # ════════════════════════════════════════════════════════════════════════════
 crypto_pairs = [
+    # Original 30
     'BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD',
     'BNB/USD', 'ADA/USD', 'AVAX/USD', 'LINK/USD', 'INJ/USD',
     'FET/USD', 'ARB/USD', 'OP/USD', 'DOT/USD', 'ATOM/USD',
     'LTC/USD', 'UNI/USD', 'NEAR/USD', 'AAVE/USD', 'APT/USD',
     'SUI/USD', 'ZEC/USD', 'BCH/USD', 'ETC/USD', 'XLM/USD',
     'FIL/USD', 'HBAR/USD', 'SEI/USD', 'JUP/USD', 'WLD/USD',
-]
+    # Added 20 to reach 50
+    'TRX/USD', 'TON/USD', 'SHIB/USD', 'PEPE/USD', 'BONK/USD',
+    'IMX/USD', 'GRT/USD', 'LDO/USD', 'SNX/USD', 'CRV/USD',
+    'ENS/USD', 'MANA/USD', 'SAND/USD', 'AXS/USD', 'BLUR/USD',
+    'PENDLE/USD', 'TIA/USD', 'PYTH/USD', 'ALT/USD', 'STRK/USD',
+]  # 50 total
 
 stock_pairs = [
+    # Original 30
     'AAPL', 'TSLA', 'NVDA', 'AMZN', 'META',
     'GOOGL', 'MSFT', 'AMD', 'NFLX', 'COIN',
     'SPY', 'QQQ', 'DIA', 'GLD', 'SLV',
     'USO', 'TLT', 'SOFI', 'RIOT', 'MARA',
     'MSTR', 'ARKK', 'XLK', 'XLF', 'XLE',
     'VTI', 'VOO', 'UPRO', 'TQQQ', 'BRK.B',
-]
+    # Added 20 to reach 50
+    'PLTR', 'HOOD', 'RBLX', 'SNAP', 'UBER',
+    'LYFT', 'ABNB', 'PINS', 'SHOP', 'PYPL',
+    'SQ', 'ROKU', 'ZM', 'SNOW', 'DKNG',
+    'LCID', 'RIVN', 'NIO', 'BIDU', 'BILI',
+]  # 50 total
 
 forex_pairs = [
+    # Original 20
     'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
     'USDCAD', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY',
     'AUDJPY', 'CADJPY', 'EURAUD', 'GBPAUD', 'NZDCAD',
     'NZDCHF', 'GBPCAD', 'CADCHF', 'AUDCAD', 'AUDCHF',
-]
+    # Added 30 to reach 50
+    'EURCAD', 'EURCHF', 'EURNZD', 'GBPCHF', 'GBPNZD',
+    'AUDNZD', 'NZDJPY', 'CHFJPY', 'SGDJPY', 'USDHKD',
+    'USDSGD', 'USDMXN', 'USDZAR', 'USDNOK', 'USDSEK',
+    'USDDKK', 'USDPLN', 'USDCZK', 'USDHUF', 'USDTRY',
+    'EURPLN', 'EURSEK', 'EURNOK', 'EURDKK', 'EURCZK',
+    'GBPSEK', 'GBPNOK', 'GBPDKK', 'GBPPLN', 'AUDSGD',
+]  # 50 total
 
 # ════════════════════════════════════════════════════════════════════════════
 # CSV HELPERS
@@ -177,38 +241,58 @@ def init_csv():
     if not os.path.exists(TRADE_LOG):
         with open(TRADE_LOG, 'w', newline='') as f:
             csv.DictWriter(f, fieldnames=TRADE_FIELDS).writeheader()
+    update_health("csv_write", "ok", "CSV files initialised", increment=False)
 
 def save_signal_to_csv(signal_data):
-    with csv_lock:
-        with open(HISTORY_FILE, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
-            writer.writerow({k: signal_data.get(k, '') for k in HISTORY_FIELDS})
+    try:
+        with csv_lock:
+            with open(HISTORY_FILE, 'a', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=HISTORY_FIELDS)
+                writer.writerow({k: signal_data.get(k, '') for k in HISTORY_FIELDS})
+        update_health("csv_write", "ok", f"Wrote signal for {signal_data.get('symbol','?')}")
+    except Exception as e:
+        update_health("csv_write", "error", f"Write failed: {e}")
 
 def save_trade_to_journal(trade_data):
-    with csv_lock:
-        with open(TRADE_LOG, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=TRADE_FIELDS)
-            writer.writerow({k: trade_data.get(k, '') for k in TRADE_FIELDS})
+    try:
+        with csv_lock:
+            with open(TRADE_LOG, 'a', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=TRADE_FIELDS)
+                writer.writerow({k: trade_data.get(k, '') for k in TRADE_FIELDS})
+        update_health("csv_write", "ok", f"Wrote trade for {trade_data.get('symbol','?')}")
+    except Exception as e:
+        update_health("csv_write", "error", f"Trade write failed: {e}")
 
 def load_history():
-    if not os.path.exists(HISTORY_FILE):
+    try:
+        if not os.path.exists(HISTORY_FILE):
+            return []
+        with csv_lock:
+            with open(HISTORY_FILE, 'r') as f:
+                data = list(csv.DictReader(f))
+        update_health("csv_read", "ok", f"Loaded {len(data)} history rows")
+        return data
+    except Exception as e:
+        update_health("csv_read", "error", f"History read failed: {e}")
         return []
-    with csv_lock:
-        with open(HISTORY_FILE, 'r') as f:
-            return list(csv.DictReader(f))
 
 def load_trade_journal():
-    if not os.path.exists(TRADE_LOG):
+    try:
+        if not os.path.exists(TRADE_LOG):
+            return []
+        with csv_lock:
+            with open(TRADE_LOG, 'r') as f:
+                data = list(csv.DictReader(f))
+        update_health("csv_read", "ok", f"Loaded {len(data)} journal rows")
+        return data
+    except Exception as e:
+        update_health("csv_read", "error", f"Journal read failed: {e}")
         return []
-    with csv_lock:
-        with open(TRADE_LOG, 'r') as f:
-            return list(csv.DictReader(f))
 
 # ════════════════════════════════════════════════════════════════════════════
 # WIN RATE / STATS HELPERS
 # ════════════════════════════════════════════════════════════════════════════
 def compute_stats(history):
-    """Return dict of win_rate, total, wins, losses, avg_pnl, top_assets."""
     total = len(history)
     if total == 0:
         return {'win_rate': 0, 'total': 0, 'wins': 0, 'losses': 0, 'avg_pnl': 0, 'top_assets': []}
@@ -223,7 +307,6 @@ def compute_stats(history):
         except (ValueError, TypeError):
             pass
 
-    # Top assets by count
     asset_counts = defaultdict(int)
     for h in history:
         sym = h.get('symbol', '')
@@ -249,10 +332,10 @@ def with_retry(fn, retries=3, delay=2, label=""):
             return fn()
         except Exception as e:
             if attempt < retries - 1:
-                log.warning(f"Retry {attempt+1}/{retries} for {label}: {e}")
+                log.warning("[RETRY] Attempt %d/%d for %s: %s", attempt+1, retries, label, e)
                 time.sleep(delay * (attempt + 1))
             else:
-                log.error(f"All retries failed for {label}: {e}")
+                log.error("[RETRY] All retries failed for %s: %s", label, e)
                 return None
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -264,10 +347,14 @@ def get_crypto_ohlcv(symbol, timeframe='1h', limit=500):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
-    return with_retry(_fetch, label=symbol)
+    result = with_retry(_fetch, label=symbol)
+    if result is not None:
+        update_health("crypto_fetch", "ok", f"Fetched {symbol} ({timeframe})")
+    else:
+        update_health("crypto_fetch", "warn", f"Failed to fetch {symbol} ({timeframe})")
+    return result
 
 def get_crypto_ohlcv_multi(symbol, timeframes=('1h', '4h')):
-    """Fetch multiple timeframes for confirmation."""
     results = {}
     for tf in timeframes:
         df = get_crypto_ohlcv(symbol, timeframe=tf)
@@ -283,7 +370,12 @@ def get_alpaca_ohlcv(symbol):
         col_map = {'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}
         bars = bars.rename(columns={k: v for k, v in col_map.items() if k in bars.columns})
         return bars
-    return with_retry(_fetch, label=symbol)
+    result = with_retry(_fetch, label=symbol)
+    if result is not None:
+        update_health("stock_fetch", "ok", f"Fetched stock {symbol}")
+    else:
+        update_health("stock_fetch", "warn", f"Failed to fetch stock {symbol}")
+    return result
 
 def get_forex_ohlcv(symbol):
     if not alpaca:
@@ -295,53 +387,53 @@ def get_forex_ohlcv(symbol):
         col_map = {'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}
         bars = bars.rename(columns={k: v for k, v in col_map.items() if k in bars.columns})
         return bars
-    return with_retry(_fetch, label=symbol)
+    result = with_retry(_fetch, label=symbol)
+    if result is not None:
+        update_health("forex_fetch", "ok", f"Fetched forex {symbol}")
+    else:
+        update_health("forex_fetch", "warn", f"Failed to fetch forex {symbol}")
+    return result
 
 # ════════════════════════════════════════════════════════════════════════════
-# INDICATORS (including new: ATR, Support/Resistance, Trend Strength)
+# INDICATORS
 # ════════════════════════════════════════════════════════════════════════════
 def add_indicators(df):
-    df = df.copy()
+    try:
+        df = df.copy()
+        df['ema20']  = ta.trend.ema_indicator(df['close'], window=20)
+        df['ema50']  = ta.trend.ema_indicator(df['close'], window=50)
+        df['ema200'] = ta.trend.ema_indicator(df['close'], window=200)
+        df['rsi']    = ta.momentum.rsi(df['close'], window=14)
+        df['vol_avg'] = df['volume'].rolling(window=20).mean()
 
-    # Core
-    df['ema20']  = ta.trend.ema_indicator(df['close'], window=20)
-    df['ema50']  = ta.trend.ema_indicator(df['close'], window=50)
-    df['ema200'] = ta.trend.ema_indicator(df['close'], window=200)
-    df['rsi']    = ta.momentum.rsi(df['close'], window=14)
-    df['vol_avg'] = df['volume'].rolling(window=20).mean()
+        macd_obj          = ta.trend.MACD(df['close'])
+        df['macd']        = macd_obj.macd()
+        df['macd_signal'] = macd_obj.macd_signal()
+        df['macd_diff']   = macd_obj.macd_diff()
 
-    # MACD
-    macd_obj        = ta.trend.MACD(df['close'])
-    df['macd']      = macd_obj.macd()
-    df['macd_signal'] = macd_obj.macd_signal()
-    df['macd_diff'] = macd_obj.macd_diff()
+        df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
 
-    # ATR
-    df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
+        bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2)
+        df['bb_upper'] = bb.bollinger_hband()
+        df['bb_lower'] = bb.bollinger_lband()
+        df['bb_mid']   = bb.bollinger_mavg()
 
-    # Bollinger Bands (for breakout)
-    bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2)
-    df['bb_upper'] = bb.bollinger_hband()
-    df['bb_lower'] = bb.bollinger_lband()
-    df['bb_mid']   = bb.bollinger_mavg()
+        adx = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14)
+        df['adx']     = adx.adx()
+        df['adx_pos'] = adx.adx_pos()
+        df['adx_neg'] = adx.adx_neg()
 
-    # ADX — trend strength
-    adx = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14)
-    df['adx']    = adx.adx()
-    df['adx_pos'] = adx.adx_pos()
-    df['adx_neg'] = adx.adx_neg()
+        df['vol_spike']   = df['volume'] / df['vol_avg']
+        df['support']     = df['low'].rolling(20).min()
+        df['resistance']  = df['high'].rolling(20).max()
 
-    # Volume spike — current vol vs 20-bar average
-    df['vol_spike'] = df['volume'] / df['vol_avg']
-
-    # Support / Resistance — rolling 20-bar min/max
-    df['support']    = df['low'].rolling(20).min()
-    df['resistance'] = df['high'].rolling(20).max()
-
-    return df
+        update_health("indicators", "ok", "Indicators computed successfully")
+        return df
+    except Exception as e:
+        update_health("indicators", "error", f"Indicator error: {e}")
+        raise
 
 def calc_trend_strength(adx, ema20, ema50, ema200, rsi, macd_diff):
-    """Return a 0–10 trend strength score."""
     score = 0
     if adx > 25:   score += 2
     if adx > 40:   score += 1
@@ -353,7 +445,6 @@ def calc_trend_strength(adx, ema20, ema50, ema200, rsi, macd_diff):
     return round(min(score, 10), 1)
 
 def calc_rr_ratio(price, stop_loss, take_profit, signal):
-    """Return risk:reward ratio."""
     try:
         if signal == 'BUY':
             risk   = abs(price - stop_loss)
@@ -366,7 +457,6 @@ def calc_rr_ratio(price, stop_loss, take_profit, signal):
         return 0
 
 def detect_breakout(price, bb_upper, bb_lower, resistance, support):
-    """Detect if price is breaking out of Bollinger or S/R levels."""
     if price > bb_upper and price > resistance:
         return "BULLISH_BREAKOUT"
     if price < bb_lower and price < support:
@@ -377,24 +467,36 @@ def multi_timeframe_confirm(symbol, primary_signal, asset_type):
     """
     Fetch 4h data and check if higher-timeframe trend agrees with signal.
     Returns True if confirmed, False if contradicted, None if unavailable.
+    NOTE: MTF rejection is a normal INFO event — not a warning.
     """
     try:
         if asset_type == 'crypto':
             df4h = get_crypto_ohlcv(symbol, timeframe='4h', limit=300)
         else:
-            return None   # Alpaca doesn't support easy multi-TF for now
+            update_health("mtf_confirm", "ok", f"{symbol}: N/A (non-crypto)")
+            return None
         if df4h is None or df4h.empty or len(df4h) < 60:
+            update_health("mtf_confirm", "warn", f"{symbol}: insufficient 4h data")
             return None
         df4h = add_indicators(df4h)
         last = df4h.iloc[-1]
         if pd.isna(last['ema50']) or pd.isna(last['ema200']):
+            update_health("mtf_confirm", "warn", f"{symbol}: NaN in 4h EMAs")
             return None
         htf_bull = last['ema50'] > last['ema200'] and last['rsi'] > 45
         htf_bear = last['ema50'] < last['ema200'] and last['rsi'] < 55
-        if primary_signal == 'BUY'  and htf_bull: return True
-        if primary_signal == 'SELL' and htf_bear: return True
+        if primary_signal == 'BUY' and htf_bull:
+            update_health("mtf_confirm", "ok", f"{symbol}: CONFIRMED (BUY aligns 4h)")
+            return True
+        if primary_signal == 'SELL' and htf_bear:
+            update_health("mtf_confirm", "ok", f"{symbol}: CONFIRMED (SELL aligns 4h)")
+            return True
+        # MTF rejection is NORMAL and expected — log at INFO, not WARNING
+        update_health("mtf_confirm", "ok",
+                      f"{symbol}: rejected - {primary_signal} on 1h contradicts 4h trend (normal filter)")
         return False
-    except Exception:
+    except Exception as e:
+        update_health("mtf_confirm", "error", f"{symbol}: exception - {e}")
         return None
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -414,8 +516,9 @@ def get_ai_analysis(symbol, signal, price, ema20, ema50, ema200,
         if key in ai_cache:
             ts, cached = ai_cache[key]
             if now - ts < CACHE_TTL:
-                log.info(f"  [CACHE HIT] {symbol}")
-                return cached    # return cached scores dict directly
+                log.info("[AI] Cache hit for %s", symbol)
+                update_health("ai_cache", "ok", f"Cache hit for {symbol}", increment=True)
+                return cached
 
     prompt = f"""You are a professional trading analyst.
 
@@ -454,12 +557,15 @@ Reason: One sentence only"""
 
     raw = with_retry(_call, label=f"AI:{symbol}")
     if raw is None:
+        update_health("ai_analysis", "error", f"AI call failed for {symbol}")
         return None
 
     scores = parse_ai_scores(raw)
+    update_health("ai_analysis", "ok", f"AI scored {symbol}: C={scores['confidence']} P={scores['profitability']}")
 
     with cache_lock:
         ai_cache[key] = (now, scores)
+    update_health("ai_cache", "ok", f"Cached result for {symbol}", increment=False)
 
     return scores
 
@@ -505,7 +611,7 @@ def parse_ai_scores(ai_text):
 # ════════════════════════════════════════════════════════════════════════════
 def get_portfolio_value():
     if not alpaca:
-        return 1000.0   # fallback
+        return 1000.0
     try:
         acct = alpaca.get_account()
         return float(acct.portfolio_value)
@@ -513,7 +619,6 @@ def get_portfolio_value():
         return 1000.0
 
 def calc_position_size(price, stop_loss, portfolio_value):
-    """Risk POSITION_RISK_PCT of portfolio per trade."""
     risk_per_share = abs(price - stop_loss)
     if risk_per_share <= 0:
         return 1
@@ -524,15 +629,15 @@ def calc_position_size(price, stop_loss, portfolio_value):
 def place_paper_trade(signal_data):
     global daily_pnl
     if not alpaca or signal_data['asset_type'] != 'stock':
-        return   # paper trade only stocks via Alpaca for now
+        return
 
     with trade_lock:
         portfolio_value = get_portfolio_value()
 
-        # Max daily loss check
         if daily_pnl < -(portfolio_value * MAX_DAILY_LOSS_PCT):
-            log.warning("⛔ Max daily loss reached — no new trades today")
-            send_telegram("⛔ *Max daily loss protection triggered.* No new paper trades today.")
+            log.warning("[TRADE] Max daily loss reached - no new trades today")
+            update_health("paper_trade", "warn", "Max daily loss protection triggered")
+            send_telegram("*[TRADE]* Max daily loss protection triggered. No new paper trades today.")
             return
 
         symbol = signal_data['symbol']
@@ -541,16 +646,17 @@ def place_paper_trade(signal_data):
             sl    = float(str(signal_data['stop_loss']).replace(',', '') or 0)
             tp    = float(str(signal_data['take_profit']).replace(',', '') or 0)
         except (ValueError, TypeError):
+            update_health("paper_trade", "warn", f"Invalid price data for {symbol}")
             return
 
         if sl <= 0 or tp <= 0:
+            update_health("paper_trade", "warn", f"Invalid SL/TP for {symbol}")
             return
 
         qty = calc_position_size(price, sl, portfolio_value)
         side = 'buy' if signal_data['signal'] == 'BUY' else 'sell'
 
         try:
-            # Trailing stop order
             trail_pct = TRAILING_STOP_PCT * 100
             alpaca.submit_order(
                 symbol=symbol,
@@ -560,7 +666,8 @@ def place_paper_trade(signal_data):
                 time_in_force='day',
                 trail_percent=trail_pct,
             )
-            log.info(f"📤 Paper trade: {side.upper()} {qty}x {symbol} @ ~{price}")
+            log.info("[TRADE] Paper %s %dx %s @ ~%s", side.upper(), qty, symbol, price)
+            update_health("paper_trade", "ok", f"Opened {side.upper()} {qty}x {symbol} @ {price}")
 
             trade_rec = {
                 'date':       datetime.now().strftime('%Y-%m-%d'),
@@ -578,13 +685,14 @@ def place_paper_trade(signal_data):
             save_trade_to_journal(trade_rec)
 
             send_telegram(
-                f"📤 *Paper Trade Opened*\n"
+                f"*Paper Trade Opened*\n"
                 f"`{side.upper()} {qty}x {symbol}`\n"
-                f"Entry ≈ `{price}` | SL `{sl}` | TP `{tp}`\n"
+                f"Entry: `{price}` | SL: `{sl}` | TP: `{tp}`\n"
                 f"Trail stop: `{trail_pct}%`"
             )
         except Exception as e:
-            log.error(f"Paper trade error for {symbol}: {e}")
+            log.error("[TRADE] Paper trade error for %s: %s", symbol, e)
+            update_health("paper_trade", "error", f"Order failed for {symbol}: {e}")
 
 # ════════════════════════════════════════════════════════════════════════════
 # SIGNAL CHECK — full pipeline
@@ -598,12 +706,11 @@ def check_signal(symbol, df, asset_type):
     try:
         df = add_indicators(df)
     except Exception as e:
-        log.warning(f"Indicator error {symbol}: {e}")
+        log.warning("[SIGNAL] Indicator error %s: %s", symbol, e)
         return None
 
     latest = df.iloc[-1]
 
-    # Guard NaN
     if any(pd.isna(latest[col]) for col in ['ema200', 'rsi', 'macd', 'atr', 'adx']):
         return None
 
@@ -627,11 +734,10 @@ def check_signal(symbol, df, asset_type):
 
     trend_strength = calc_trend_strength(adx, ema20, ema50, ema200, rsi, macd_diff)
     breakout       = detect_breakout(price, bb_upper, bb_lower, resistance, support)
-    volume_spike   = vol_spike >= 1.5   # 50 % above average
+    volume_spike   = vol_spike >= 1.5
 
     signal = None
 
-    # ── BUY conditions ──────────────────────────────────────────────────
     buy_score = 0
     if ema20 > ema50:                              buy_score += 2
     if ema50 > ema200:                             buy_score += 1
@@ -644,7 +750,6 @@ def check_signal(symbol, df, asset_type):
     if buy_score >= 7:
         signal = 'BUY'
 
-    # ── SELL conditions ─────────────────────────────────────────────────
     sell_score = 0
     if ema20 < ema50:                              sell_score += 2
     if ema50 < ema200:                             sell_score += 1
@@ -660,14 +765,16 @@ def check_signal(symbol, df, asset_type):
     if not signal:
         return None
 
-    # ── Multi-timeframe confirmation ─────────────────────────────────────
+    update_health("signal_check", "ok", f"{symbol}: {signal} candidate (score B={buy_score} S={sell_score})")
+
+    # MTF confirmation — rejection is a normal INFO outcome, not an error
     mtf = multi_timeframe_confirm(symbol, signal, asset_type)
     mtf_label = {True: 'CONFIRMED', False: 'REJECTED', None: 'N/A'}[mtf]
     if mtf is False:
-        log.info(f"  ↩ {symbol} MTF rejected ({signal} on 1h but opposite on 4h)")
+        # This is expected behaviour — log at INFO level (not warning)
+        log.info("[MTF] %s: %s signal filtered out - 1h vs 4h disagreement (normal)", symbol, signal)
         return None
 
-    # ── AI analysis (only for signals passing technical filter) ──────────
     scores = get_ai_analysis(
         symbol, signal, price, ema20, ema50, ema200,
         rsi, macd, macd_sig, volume, vol_avg,
@@ -676,7 +783,6 @@ def check_signal(symbol, df, asset_type):
     if scores is None:
         return None
 
-    # ── Risk/reward ratio ────────────────────────────────────────────────
     try:
         sl_price = float(str(scores['stop_loss']).replace(',', '') or 0)
         tp_price = float(str(scores['take_profit']).replace(',', '') or 0)
@@ -684,16 +790,14 @@ def check_signal(symbol, df, asset_type):
     except (ValueError, TypeError):
         rr = 0
 
-    # ── Quality filter ───────────────────────────────────────────────────
-    threshold   = HIGH_QUALITY_SCORES[asset_type]
-    confidence  = scores['confidence']
+    threshold     = HIGH_QUALITY_SCORES[asset_type]
+    confidence    = scores['confidence']
     profitability = scores['profitability']
 
     if confidence < threshold['confidence'] or profitability < threshold['profitability']:
-        log.info(f"  ↩ {symbol} below quality threshold (conf={confidence}, profit={profitability})")
+        log.info("[SIGNAL] %s below quality threshold (conf=%d, profit=%d)", symbol, confidence, profitability)
         return None
 
-    # ── Build signal record ──────────────────────────────────────────────
     signal_data = {
         'timestamp':     datetime.now().strftime('%H:%M:%S'),
         'date':          datetime.now().strftime('%Y-%m-%d'),
@@ -728,11 +832,10 @@ def check_signal(symbol, df, asset_type):
         total_signals_found += 1
 
     save_signal_to_csv(signal_data)
-
-    # Auto paper trade
     place_paper_trade(signal_data)
 
-    log.info(f"✅ {signal} {symbol} | P:{profitability} C:{confidence} RR:{rr} MTF:{mtf_label}")
+    log.info("[SIGNAL] PASS %s %s | P:%d C:%d RR:%.2f MTF:%s",
+             signal, symbol, profitability, confidence, rr, mtf_label)
     return signal_data
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -741,45 +844,53 @@ def check_signal(symbol, df, asset_type):
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(
+        r = requests.post(
             url,
             data={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"},
             timeout=10
         )
+        if r.status_code == 200:
+            update_health("telegram_send", "ok", f"Sent message ({len(message)} chars)")
+        else:
+            update_health("telegram_send", "warn", f"HTTP {r.status_code} from Telegram")
     except Exception as e:
-        log.error(f"Telegram send failed: {e}")
+        log.error("[TELEGRAM] Send failed: %s", e)
+        update_health("telegram_send", "error", f"Send failed: {e}")
 
 def send_telegram_summary(signals):
     if not signals:
         return
     sorted_signals = sorted(signals, key=lambda x: x['profitability'], reverse=True)
-    msg = (f"*📊 TRADE GRID ANALYSIS*\n"
-           f"_High quality signals — {datetime.now().strftime('%d %b %Y %H:%M')}_\n\n")
+    msg = (f"*TRADE GRID ANALYSIS*\n"
+           f"High quality signals - {datetime.now().strftime('%d %b %Y %H:%M')}\n\n")
     for i, s in enumerate(sorted_signals[:8], 1):
-        rr_str = f" | RR `{s['rr_ratio']}`" if s.get('rr_ratio') else ''
+        rr_str  = f" | RR `{s['rr_ratio']}`" if s.get('rr_ratio') else ''
         mtf_str = f" | MTF `{s.get('mtf', 'N/A')}`"
         msg += (
             f"*#{i} {s['signal']} {s['symbol']}*\n"
-            f"💰 P:`{s['profitability']}/10` 🛡 S:`{s['safety']}/10` "
-            f"⚠️ R:`{s['risk']}/10` 🎯 C:`{s['confidence']}/10`\n"
-            f"📍 Entry:`{s['entry']}` SL:`{s['stop_loss']}` TP:`{s['take_profit']}`"
+            f"P:`{s['profitability']}/10` S:`{s['safety']}/10` "
+            f"R:`{s['risk']}/10` C:`{s['confidence']}/10`\n"
+            f"Entry:`{s['entry']}` SL:`{s['stop_loss']}` TP:`{s['take_profit']}`"
             f"{rr_str}{mtf_str}\n"
-            f"📈 Trend:`{s.get('trend_strength','?')}/10` "
+            f"Trend:`{s.get('trend_strength','?')}/10` "
             f"Breakout:`{s.get('breakout','?')}`\n"
-            f"💡 _{s['reason']}_\n\n"
+            f"_{s['reason']}_\n\n"
         )
-    msg += "🌐 _Open Trade Grid dashboard for full rankings_"
+    msg += "_Open Trade Grid dashboard for full rankings_"
     send_telegram(msg)
 
 def handle_telegram_commands():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     last_update_id = None
+    update_health("telegram_commands", "ok", "Telegram command listener started", increment=False)
 
     while True:
         try:
             params = {'timeout': 30, 'offset': last_update_id}
             response = requests.get(url, params=params, timeout=35)
             data = response.json()
+            update_health("telegram_commands", "ok",
+                          f"Polling active ({len(data.get('result',[]))} updates)")
 
             for update in data.get('result', []):
                 last_update_id = update['update_id'] + 1
@@ -793,14 +904,14 @@ def handle_telegram_commands():
 
                 if cmd == '/status':
                     reply = (
-                        f"*📊 Bot Status*\n"
+                        f"*Bot Status*\n"
                         f"Last scan: `{last_scan_time}`\n"
                         f"Assets: `{len(crypto_pairs) + len(stock_pairs) + len(forex_pairs)}`\n"
                         f"Current signals: `{len(all_signals)}`\n"
                         f"Total found: `{total_signals_found}`\n"
                         f"Daily P&L: `{daily_pnl:.4f}`\n"
                         f"Scans run: `{scan_count}`\n"
-                        f"Status: ✅ Running"
+                        f"Status: Running"
                     )
                     send_telegram(reply)
 
@@ -809,7 +920,7 @@ def handle_telegram_commands():
                         send_telegram("No signals in current scan. Wait for next scan.")
                     else:
                         top = sorted(all_signals, key=lambda x: x['profitability'], reverse=True)[:5]
-                        reply = "*🏆 Top Signals*\n\n"
+                        reply = "*Top Signals*\n\n"
                         for i, s in enumerate(top, 1):
                             reply += (
                                 f"*#{i} {s['signal']} {s['symbol']}*\n"
@@ -828,15 +939,15 @@ def handle_telegram_commands():
                         send_telegram("No signals recorded today yet.")
                     else:
                         best = sorted(today_signals, key=lambda x: float(x.get('profitability', 0) or 0), reverse=True)[:5]
-                        reply = f"*🌟 Best Signals Today ({today})*\n\n"
+                        reply = f"*Best Signals Today ({today})*\n\n"
                         for i, s in enumerate(best, 1):
-                            reply += f"*#{i} {s.get('signal')} {s.get('symbol')}* — P:`{s.get('profitability')}/10`\n"
+                            reply += f"*#{i} {s.get('signal')} {s.get('symbol')}* - P:`{s.get('profitability')}/10`\n"
                         send_telegram(reply)
 
                 elif cmd == '/wins':
                     history = load_history()
                     wins = [h for h in history if str(h.get('outcome', '')).upper() == 'WIN']
-                    reply = f"*✅ Wins: {len(wins)} total*\n"
+                    reply = f"*Wins: {len(wins)} total*\n"
                     for s in wins[-5:]:
                         reply += f"`{s.get('symbol')}` {s.get('signal')} P&L:`{s.get('pnl','?')}`\n"
                     send_telegram(reply)
@@ -844,7 +955,7 @@ def handle_telegram_commands():
                 elif cmd == '/losses':
                     history = load_history()
                     losses = [h for h in history if str(h.get('outcome', '')).upper() == 'LOSS']
-                    reply = f"*❌ Losses: {len(losses)} total*\n"
+                    reply = f"*Losses: {len(losses)} total*\n"
                     for s in losses[-5:]:
                         reply += f"`{s.get('symbol')}` {s.get('signal')} P&L:`{s.get('pnl','?')}`\n"
                     send_telegram(reply)
@@ -856,7 +967,7 @@ def handle_telegram_commands():
                     else:
                         stats = compute_stats(history)
                         reply = (
-                            f"*📁 Signal History*\n"
+                            f"*Signal History*\n"
                             f"Total: `{stats['total']}`\n"
                             f"Win rate: `{stats['win_rate']}%`\n"
                             f"Wins: `{stats['wins']}` | Losses: `{stats['losses']}`\n"
@@ -867,27 +978,26 @@ def handle_telegram_commands():
 
                 elif cmd == '/help':
                     reply = (
-                        "*🤖 Trade Grid Analysis*\n\n"
-                        "`/status` — Bot status\n"
-                        "`/topsignals` — Current top signals\n"
-                        "`/besttoday` — Best signals today\n"
-                        "`/wins` — Win history\n"
-                        "`/losses` — Loss history\n"
-                        "`/history` — Stats summary\n"
-                        "`/help` — This message\n\n"
-                        "Or type any asset symbol (e.g. `BTC/USD`) to look it up."
+                        "*Trade Grid Analysis*\n\n"
+                        "`/status` - Bot status\n"
+                        "`/topsignals` - Current top signals\n"
+                        "`/besttoday` - Best signals today\n"
+                        "`/wins` - Win history\n"
+                        "`/losses` - Loss history\n"
+                        "`/history` - Stats summary\n"
+                        "`/help` - This message\n\n"
+                        "Or type any asset symbol (e.g. BTC/USD) to look it up."
                     )
                     send_telegram(reply)
 
                 else:
-                    # Individual asset lookup
                     sym = text.strip().upper()
                     if sym:
                         history = load_history()
                         matches = [h for h in history if h.get('symbol','').upper() == sym]
                         if matches:
                             recent = matches[-3:]
-                            reply = f"*🔍 {sym} — last {len(recent)} signal(s)*\n\n"
+                            reply = f"*{sym} - last {len(recent)} signal(s)*\n\n"
                             for s in reversed(recent):
                                 reply += (
                                     f"`{s.get('date')} {s.get('time')}` "
@@ -898,14 +1008,14 @@ def handle_telegram_commands():
                             send_telegram(f"No signals found for `{sym}` yet.")
 
         except Exception as e:
-            log.error(f"Telegram command error: {e}")
+            log.error("[TELEGRAM] Command listener error: %s", e)
+            update_health("telegram_commands", "error", f"Listener error: {e}")
             time.sleep(5)
 
 # ════════════════════════════════════════════════════════════════════════════
 # MAIN SCANNER
 # ════════════════════════════════════════════════════════════════════════════
 def scan_asset(args):
-    """Worker function for thread pool."""
     symbol, asset_type, fetch_fn = args
     try:
         df = fetch_fn(symbol)
@@ -913,19 +1023,19 @@ def scan_asset(args):
             return None
         return check_signal(symbol, df, asset_type)
     except Exception as e:
-        log.warning(f"Scan error {symbol}: {e}")
+        log.warning("[SCAN] Error scanning %s: %s", symbol, e)
         return None
 
 def run_scanner():
     global all_signals, last_scan_time, scan_count, daily_pnl
 
-    # Reset daily P&L at midnight
     if datetime.now().hour == 0 and datetime.now().minute < 3:
         daily_pnl = 0.0
 
     scan_count += 1
     last_scan_time = datetime.now().strftime('%d %b %Y %H:%M')
-    log.info(f"\n🔍 Scan #{scan_count} — {last_scan_time}")
+    log.info("[SCAN] Starting scan #%d at %s", scan_count, last_scan_time)
+    update_health("scanner", "ok", f"Scan #{scan_count} started")
 
     tasks = []
     for sym in crypto_pairs:
@@ -949,54 +1059,70 @@ def run_scanner():
 
     if all_signals:
         send_telegram_summary(all_signals)
-        log.info(f"✅ Scan complete — {len(all_signals)} signals")
+        log.info("[SCAN] Complete - %d high quality signals found", len(all_signals))
+        update_health("scanner", "ok",
+                      f"Scan #{scan_count} complete - {len(all_signals)} signals from {len(tasks)} assets")
     else:
-        log.info(f"✅ Scan complete — No high quality signals")
+        log.info("[SCAN] Complete - no high quality signals this scan")
+        update_health("scanner", "ok",
+                      f"Scan #{scan_count} complete - 0 signals (normal, filters are strict)")
 
-    log.info(f"   Monitored: {len(tasks)} assets total")
+    log.info("[SCAN] Monitored %d assets total", len(tasks))
 
 # ════════════════════════════════════════════════════════════════════════════
-# UNIT TESTS — indicator sanity checks
+# UNIT TESTS
 # ════════════════════════════════════════════════════════════════════════════
 def run_unit_tests():
     results = []
     try:
         import numpy as np
-        # Synthetic OHLCV data
-        n = 300
+        n     = 300
         close = pd.Series(np.cumsum(np.random.randn(n)) + 100)
         high  = close + abs(np.random.randn(n))
         low   = close - abs(np.random.randn(n))
         vol   = pd.Series(np.random.randint(1000, 5000, n), dtype=float)
         df = pd.DataFrame({'open': close, 'high': high, 'low': low,
                            'close': close, 'volume': vol})
-
         df = add_indicators(df)
 
         def test(name, cond):
             status = "PASS" if cond else "FAIL"
-            results.append(f"{status}  {name}")
+            results.append({'name': name, 'status': status})
             return cond
 
-        test("EMA20 computed",     not df['ema20'].isnull().all())
-        test("EMA50 computed",     not df['ema50'].isnull().all())
-        test("EMA200 computed",    not df['ema200'].isnull().all())
-        test("RSI range 0-100",    df['rsi'].dropna().between(0, 100).all())
-        test("MACD computed",      not df['macd'].isnull().all())
-        test("ATR positive",       (df['atr'].dropna() >= 0).all())
-        test("ADX positive",       (df['adx'].dropna() >= 0).all())
-        test("Support <= close",   (df['support'].dropna() <= df['close'][df['support'].notna()]).all())
-        test("Resistance >= close",(df['resistance'].dropna() >= df['close'][df['resistance'].notna()]).all())
-        test("Vol spike computed", not df['vol_spike'].isnull().all())
-        test("BB upper > lower",   (df['bb_upper'].dropna() > df['bb_lower'].dropna()).all())
+        test("EMA20 computed",      not df['ema20'].isnull().all())
+        test("EMA50 computed",      not df['ema50'].isnull().all())
+        test("EMA200 computed",     not df['ema200'].isnull().all())
+        test("RSI range 0-100",     df['rsi'].dropna().between(0, 100).all())
+        test("MACD computed",       not df['macd'].isnull().all())
+        test("ATR positive",        (df['atr'].dropna() >= 0).all())
+        test("ADX positive",        (df['adx'].dropna() >= 0).all())
+        test("Support <= close",    (df['support'].dropna() <= df['close'][df['support'].notna()]).all())
+        test("Resistance >= close", (df['resistance'].dropna() >= df['close'][df['resistance'].notna()]).all())
+        test("Vol spike computed",  not df['vol_spike'].isnull().all())
+        test("BB upper > lower",    (df['bb_upper'].dropna() > df['bb_lower'].dropna()).all())
 
-        passed = sum(1 for r in results if r.startswith("PASS"))
-        log.info(f"🧪 Unit tests: {passed}/{len(results)} passed")
+        passed = sum(1 for r in results if r['status'] == 'PASS')
+        total  = len(results)
+        log.info("[TESTS] %d/%d passed", passed, total)
+
+        if passed == total:
+            update_health("unit_tests", "ok", f"All {total} tests passed")
+        else:
+            fails = [r['name'] for r in results if r['status'] == 'FAIL']
+            update_health("unit_tests", "warn", f"{passed}/{total} passed. Failed: {', '.join(fails)}")
+
         with open(UNIT_TEST_LOG, 'w') as f:
             f.write(f"Unit test run: {datetime.now()}\n")
-            f.write('\n'.join(results))
+            for r in results:
+                f.write(f"{r['status']}  {r['name']}\n")
+
+        return results
+
     except Exception as e:
-        log.error(f"Unit test error: {e}")
+        log.error("[TESTS] Unit test exception: %s", e)
+        update_health("unit_tests", "error", f"Test runner exception: {e}")
+        return []
 
 # ════════════════════════════════════════════════════════════════════════════
 # DASHBOARD HTML
@@ -1067,10 +1193,8 @@ tbody tr:hover{background:var(--surface2)}
 .no-signals-icon{font-size:28px;margin-bottom:8px}
 .search-input{padding:6px 10px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:12px;flex:1;min-width:150px}
 .search-input:focus{outline:none;border-color:var(--accent)}.search-input::placeholder{color:var(--muted)}
-/* Win rate bar */
 .wr-bar{height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;margin-top:4px}
 .wr-fill{height:100%;background:var(--green);border-radius:4px;transition:width .4s}
-/* Guide */
 .guide-full{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
 .guide-full h2{font-size:14px;font-weight:600;color:var(--accent);margin-bottom:10px}
 .guide-full p{font-size:12px;color:var(--muted2);line-height:1.6;margin-bottom:8px}
@@ -1095,13 +1219,70 @@ tbody tr:hover{background:var(--surface2)}
 @media(min-width:768px){.rules-grid{grid-template-columns:1fr 1fr}}
 .rule{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:11px;color:var(--muted2);line-height:1.4}
 .rule strong{color:var(--text);display:block;margin-bottom:3px}
-/* Stats tab */
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
 .big-stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px}
 .big-stat-val{font-size:28px;font-weight:700;margin-bottom:4px}
 .big-stat-lbl{font-size:11px;color:var(--muted2);text-transform:uppercase;letter-spacing:.6px}
 .top-assets-table td{padding:6px 10px;font-size:12px}
-@media(max-width:480px){.header{padding:0 12px}.logo{font-size:12px}.main{padding:12px}.stat-value{font-size:18px}table{font-size:11px}th,td{padding:6px 8px}.reason-text{max-width:100px;font-size:9px}}
+
+/* ── SYSTEM HEALTH TAB ─────────────────────────────────────────── */
+.health-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px}
+.health-card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:14px 16px;
+  display:flex;
+  align-items:flex-start;
+  gap:14px;
+  transition:border-color .2s;
+}
+.health-card:hover{border-color:var(--muted)}
+.health-card.status-ok    {border-left:3px solid var(--green)}
+.health-card.status-warn  {border-left:3px solid var(--yellow)}
+.health-card.status-error {border-left:3px solid var(--red)}
+.health-card.status-idle  {border-left:3px solid var(--muted)}
+.health-icon{
+  width:34px;height:34px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;flex-shrink:0;margin-top:1px;
+}
+.health-card.status-ok   .health-icon{background:rgba(0,196,140,.12)}
+.health-card.status-warn .health-icon{background:rgba(245,158,11,.12)}
+.health-card.status-error .health-icon{background:rgba(255,77,109,.12)}
+.health-card.status-idle .health-icon{background:rgba(113,128,150,.1)}
+.health-body{flex:1;min-width:0}
+.health-name{font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px;display:flex;align-items:center;gap:8px}
+.health-msg{font-size:11px;color:var(--muted2);line-height:1.4;word-break:break-word}
+.health-meta{display:flex;align-items:center;gap:10px;margin-top:6px}
+.health-time{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+.health-count{font-size:10px;color:var(--muted2);background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+.status-dot-sm{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.status-dot-sm.ok   {background:var(--green);box-shadow:0 0 5px var(--green)}
+.status-dot-sm.warn {background:var(--yellow);box-shadow:0 0 5px var(--yellow)}
+.status-dot-sm.error{background:var(--red);box-shadow:0 0 5px var(--red)}
+.status-dot-sm.idle {background:var(--muted)}
+.health-banner{
+  display:flex;align-items:center;gap:12px;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:14px 18px;margin-bottom:16px;
+}
+.health-banner-icon{font-size:22px}
+.health-banner-text h3{font-size:14px;font-weight:700;margin-bottom:2px}
+.health-banner-text p{font-size:11px;color:var(--muted2)}
+.health-summary-pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.h-pill{
+  display:flex;align-items:center;gap:6px;
+  padding:5px 12px;border-radius:20px;
+  font-size:11px;font-weight:600;border:1px solid;
+}
+.h-pill-ok   {background:rgba(0,196,140,.08);border-color:rgba(0,196,140,.3);color:var(--green)}
+.h-pill-warn {background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.3);color:var(--yellow)}
+.h-pill-error{background:rgba(255,77,109,.08);border-color:rgba(255,77,109,.3);color:var(--red)}
+.h-pill-idle {background:rgba(113,128,150,.08);border-color:rgba(113,128,150,.3);color:var(--muted2)}
+.health-section-title{font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:.8px;margin:16px 0 8px;font-weight:600}
+
+@media(max-width:480px){.header{padding:0 12px}.logo{font-size:12px}.main{padding:12px}.stat-value{font-size:18px}table{font-size:11px}th,td{padding:6px 8px}.reason-text{max-width:100px;font-size:9px}.health-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -1110,40 +1291,39 @@ tbody tr:hover{background:var(--surface2)}
   <div class="header-right">
     <div class="status-badge"><div class="status-dot"></div>Live</div>
     <div class="last-update" id="lastUpdate">Loading...</div>
-    <button class="theme-btn" onclick="toggleTheme()">☀ / ☾</button>
+    <button class="theme-btn" onclick="toggleTheme()">Light / Dark</button>
   </div>
 </div>
 
 <div class="main">
-  <!-- STATS ROW -->
   <div class="stats-row">
     <div class="stat-card"><div class="stat-label">Current Signals</div><div class="stat-value" id="statCurrent">0</div><div class="stat-sub">This scan</div></div>
     <div class="stat-card"><div class="stat-label">Total History</div><div class="stat-value" id="statTotal">0</div><div class="stat-sub">All time</div></div>
     <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value" id="statWinRate">—</div><div class="wr-bar"><div class="wr-fill" id="wrFill" style="width:0%"></div></div></div>
     <div class="stat-card"><div class="stat-label">Total P&amp;L</div><div class="stat-value" id="statPnl">—</div><div class="stat-sub">Paper trades</div></div>
-    <div class="stat-card"><div class="stat-label">Assets Monitored</div><div class="stat-value" id="statAssets">—</div><div class="stat-sub">Crypto · Stocks · Forex</div></div>
+    <div class="stat-card"><div class="stat-label">Assets Monitored</div><div class="stat-value" id="statAssets">150</div><div class="stat-sub">50 Crypto + 50 Stocks + 50 Forex</div></div>
     <div class="stat-card"><div class="stat-label">Scan Interval</div><div class="stat-value">2.5m</div><div class="stat-sub">Auto-refresh 30s</div></div>
   </div>
 
-  <!-- TABS -->
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('signals',event)">📊 Live Signals</button>
-    <button class="tab" onclick="switchTab('history',event)">📁 History</button>
-    <button class="tab" onclick="switchTab('performance',event)">📈 Performance</button>
-    <button class="tab" onclick="switchTab('journal',event)">📒 Trade Journal</button>
-    <button class="tab" onclick="switchTab('guide',event)">📖 How To Trade</button>
+    <button class="tab active"  onclick="switchTab('signals',event)">Live Signals</button>
+    <button class="tab"         onclick="switchTab('history',event)">History</button>
+    <button class="tab"         onclick="switchTab('performance',event)">Performance</button>
+    <button class="tab"         onclick="switchTab('journal',event)">Trade Journal</button>
+    <button class="tab"         onclick="switchTab('health',event)">System Health</button>
+    <button class="tab"         onclick="switchTab('guide',event)">How To Trade</button>
   </div>
 
-  <!-- LIVE SIGNALS TAB -->
+  <!-- ══ LIVE SIGNALS ══════════════════════════════════════════════ -->
   <div id="tab-signals" class="tab-content active">
     <div class="controls">
       <span class="filter-label">Sort:</span>
-      <button class="sort-btn active" onclick="sortTable('profitability',event)">💰 Profit</button>
-      <button class="sort-btn" onclick="sortTable('safety',event)">🛡 Safety</button>
-      <button class="sort-btn" onclick="sortTable('risk',event)">⚠️ Risk</button>
-      <button class="sort-btn" onclick="sortTable('confidence',event)">🎯 Conf</button>
-      <button class="sort-btn" onclick="sortTable('rr_ratio',event)">⚖️ RR</button>
-      <button class="sort-btn" onclick="sortTable('trend_strength',event)">📈 Trend</button>
+      <button class="sort-btn active" onclick="sortTable('profitability',event)">Profit</button>
+      <button class="sort-btn" onclick="sortTable('safety',event)">Safety</button>
+      <button class="sort-btn" onclick="sortTable('risk',event)">Risk</button>
+      <button class="sort-btn" onclick="sortTable('confidence',event)">Confidence</button>
+      <button class="sort-btn" onclick="sortTable('rr_ratio',event)">RR</button>
+      <button class="sort-btn" onclick="sortTable('trend_strength',event)">Trend</button>
       <select class="filter-select" id="typeFilter" onchange="renderSignals()">
         <option value="">All types</option>
         <option value="crypto">Crypto</option>
@@ -1151,35 +1331,34 @@ tbody tr:hover{background:var(--surface2)}
         <option value="forex">Forex</option>
       </select>
       <select class="filter-select" id="signalFilter" onchange="renderSignals()">
-        <option value="">BUY & SELL</option>
+        <option value="">BUY &amp; SELL</option>
         <option value="BUY">BUY only</option>
         <option value="SELL">SELL only</option>
       </select>
-      <button class="refresh-btn" onclick="loadSignals()">↻ Refresh</button>
+      <button class="refresh-btn" onclick="loadSignals()">Refresh</button>
     </div>
     <div class="table-wrap"><table>
       <thead><tr>
-        <th onclick="sortTable('symbol',event)">Symbol ↕</th>
-        <th onclick="sortTable('signal',event)">Signal ↕</th>
-        <th onclick="sortTable('price',event)">Price ↕</th>
-        <th onclick="sortTable('profitability',event)">Profit ↕</th>
-        <th onclick="sortTable('safety',event)">Safety ↕</th>
-        <th onclick="sortTable('risk',event)">Risk ↕</th>
-        <th onclick="sortTable('confidence',event)">Conf ↕</th>
-        <th onclick="sortTable('rr_ratio',event)">RR ↕</th>
-        <th onclick="sortTable('trend_strength',event)">Trend ↕</th>
-        <th>Breakout</th>
-        <th>MTF</th>
+        <th onclick="sortTable('symbol',event)">Symbol</th>
+        <th onclick="sortTable('signal',event)">Signal</th>
+        <th onclick="sortTable('price',event)">Price</th>
+        <th onclick="sortTable('profitability',event)">Profit</th>
+        <th onclick="sortTable('safety',event)">Safety</th>
+        <th onclick="sortTable('risk',event)">Risk</th>
+        <th onclick="sortTable('confidence',event)">Conf</th>
+        <th onclick="sortTable('rr_ratio',event)">RR</th>
+        <th onclick="sortTable('trend_strength',event)">Trend</th>
+        <th>Breakout</th><th>MTF</th>
         <th>Entry</th><th>Stop Loss</th><th>Take Profit</th>
         <th>RSI</th><th>MACD</th><th>ATR</th>
         <th>Reason</th>
-        <th onclick="sortTable('timestamp',event)">Time ↕</th>
+        <th onclick="sortTable('timestamp',event)">Time</th>
       </tr></thead>
       <tbody id="tableBody"><tr><td colspan="19" class="no-signals"><div class="no-signals-icon">📡</div>Scanning markets…</td></tr></tbody>
     </table></div>
   </div>
 
-  <!-- HISTORY TAB -->
+  <!-- ══ HISTORY ═══════════════════════════════════════════════════ -->
   <div id="tab-history" class="tab-content">
     <div class="controls">
       <input class="search-input" type="text" id="historySearch" placeholder="Search symbol…" oninput="renderHistory()">
@@ -1189,10 +1368,10 @@ tbody tr:hover{background:var(--surface2)}
         <option value="stock">Stock</option>
         <option value="forex">Forex</option>
       </select>
-      <button class="sort-btn" onclick="sortHistory('profitability',event)">💰 Profit</button>
-      <button class="sort-btn" onclick="sortHistory('confidence',event)">🎯 Conf</button>
-      <button class="sort-btn" onclick="sortHistory('date',event)">📅 Date</button>
-      <button class="refresh-btn" onclick="loadHistory()">↻ Refresh</button>
+      <button class="sort-btn" onclick="sortHistory('profitability',event)">Profit</button>
+      <button class="sort-btn" onclick="sortHistory('confidence',event)">Confidence</button>
+      <button class="sort-btn" onclick="sortHistory('date',event)">Date</button>
+      <button class="refresh-btn" onclick="loadHistory()">Refresh</button>
     </div>
     <div class="table-wrap"><table>
       <thead><tr>
@@ -1204,9 +1383,9 @@ tbody tr:hover{background:var(--surface2)}
     </table></div>
   </div>
 
-  <!-- PERFORMANCE TAB -->
+  <!-- ══ PERFORMANCE ════════════════════════════════════════════════ -->
   <div id="tab-performance" class="tab-content">
-    <div class="stats-grid" id="perfStats">
+    <div class="stats-grid">
       <div class="big-stat"><div class="big-stat-val" id="perfWR">—</div><div class="big-stat-lbl">Win Rate</div></div>
       <div class="big-stat"><div class="big-stat-val" id="perfWins">—</div><div class="big-stat-lbl">Total Wins</div></div>
       <div class="big-stat"><div class="big-stat-val" id="perfLosses">—</div><div class="big-stat-lbl">Total Losses</div></div>
@@ -1215,18 +1394,18 @@ tbody tr:hover{background:var(--surface2)}
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px">
       <div class="stat-label" style="margin-bottom:10px">Top Performing Assets</div>
-      <table class="top-assets-table" style="width:100%;border-collapse:collapse">
-        <thead><tr><th style="text-align:left;font-size:10px;color:var(--muted2);padding:6px 10px">Symbol</th><th style="text-align:left;font-size:10px;color:var(--muted2)">Signal Count</th></tr></thead>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr><th style="text-align:left;font-size:10px;color:var(--muted2);padding:6px 10px">Symbol</th><th style="text-align:left;font-size:10px;color:var(--muted2)">Count</th></tr></thead>
         <tbody id="topAssetsBody"><tr><td colspan="2" style="color:var(--muted2);padding:10px;font-size:12px">No data yet</td></tr></tbody>
       </table>
     </div>
   </div>
 
-  <!-- TRADE JOURNAL TAB -->
+  <!-- ══ TRADE JOURNAL ══════════════════════════════════════════════ -->
   <div id="tab-journal" class="tab-content">
     <div class="controls">
       <input class="search-input" type="text" id="journalSearch" placeholder="Search symbol…" oninput="renderJournal()">
-      <button class="refresh-btn" onclick="loadJournal()">↻ Refresh</button>
+      <button class="refresh-btn" onclick="loadJournal()">Refresh</button>
     </div>
     <div class="table-wrap"><table>
       <thead><tr>
@@ -1237,10 +1416,38 @@ tbody tr:hover{background:var(--surface2)}
     </table></div>
   </div>
 
-  <!-- HOW TO TRADE TAB -->
+  <!-- ══ SYSTEM HEALTH ══════════════════════════════════════════════ -->
+  <div id="tab-health" class="tab-content">
+
+    <!-- Overall banner -->
+    <div class="health-banner" id="healthBanner">
+      <div class="health-banner-icon" id="healthBannerIcon">⬤</div>
+      <div class="health-banner-text">
+        <h3 id="healthBannerTitle">Checking system…</h3>
+        <p id="healthBannerSub">Loading health data from backend</p>
+      </div>
+      <button class="refresh-btn" style="margin-left:auto" onclick="loadHealth()">Refresh</button>
+    </div>
+
+    <!-- Summary pills -->
+    <div class="health-summary-pills" id="healthPills"></div>
+
+    <!-- Cards -->
+    <div class="health-section-title">All Functions</div>
+    <div class="health-grid" id="healthGrid">
+      <div style="color:var(--muted2);font-size:12px;padding:20px">Loading health data…</div>
+    </div>
+
+    <!-- Auto-refresh note -->
+    <div style="margin-top:16px;font-size:10px;color:var(--muted);text-align:right">
+      Auto-refreshes every 15 seconds &nbsp;|&nbsp; Last fetched: <span id="healthLastFetch">—</span>
+    </div>
+  </div>
+
+  <!-- ══ HOW TO TRADE ════════════════════════════════════════════════ -->
   <div id="tab-guide" class="tab-content">
     <div class="guide-full"><h2>What This Bot Does</h2>
-      <p>Trade Grid Analysis scans assets every 2.5 minutes across crypto, stocks, commodities and indices using EMA, RSI, MACD, ATR, ADX, Bollinger Bands, Support/Resistance and multi-timeframe confirmation. Only setups passing the technical filter are sent to AI for scoring. High quality signals (crypto 7/10, stocks 6/10) appear here and in your Telegram.</p>
+      <p>Trade Grid Analysis scans 150 assets every 2.5 minutes across crypto, stocks, and forex using EMA, RSI, MACD, ATR, ADX, Bollinger Bands, Support/Resistance and multi-timeframe confirmation. Only setups passing the technical filter are sent to AI for scoring. High quality signals (crypto 7/10, stocks/forex 6/10) appear here and in your Telegram.</p>
     </div>
     <div class="platform-row">
       <div class="platform-card"><div class="badge badge-green">Recommended</div><h4>Plus500</h4><p>Best for beginners. Crypto, stocks, forex, gold, oil and indices in one place. Simple interface, no commissions, CFDs. Great for small accounts.</p></div>
@@ -1251,23 +1458,23 @@ tbody tr:hover{background:var(--surface2)}
       <div class="guide-grid" style="margin-top:12px">
         <div><ul style="list-style:none;padding:0">
           <li style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">ATR (Avg True Range)</strong> — Measures volatility. Higher ATR = bigger price swings. Used to size stop losses.</li>
-          <li style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">ADX / Trend Strength</strong> — Scores trend power 0–10. Above 25 = strong trend. Bot requires trend for signals.</li>
-          <li style="padding:6px 0;font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">Risk/Reward (RR)</strong> — Potential profit ÷ potential loss. Aim for RR ≥ 2 (earn twice what you risk).</li>
+          <li style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">ADX / Trend Strength</strong> — Scores trend power 0-10. Above 25 = strong trend. Bot requires trend for signals.</li>
+          <li style="padding:6px 0;font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">Risk/Reward (RR)</strong> — Potential profit divided by potential loss. Aim for RR 2 or higher.</li>
         </ul></div>
         <div><ul style="list-style:none;padding:0">
           <li style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">Breakout</strong> — Price breaking above resistance or below support. Bullish/Bearish breakout = strong signal.</li>
-          <li style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">Volume Spike</strong> — Volume 50%+ above average. Confirms real momentum behind a move.</li>
-          <li style="padding:6px 0;font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">MTF (Multi-Timeframe)</strong> — CONFIRMED = 4h trend agrees with 1h signal. REJECTED = contradicts.</li>
+          <li style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">Volume Spike</strong> — Volume 50% above average. Confirms real momentum behind a move.</li>
+          <li style="padding:6px 0;font-size:12px;color:var(--muted2)"><strong style="color:var(--text)">MTF (Multi-Timeframe)</strong> — CONFIRMED = 4h trend agrees with 1h signal. REJECTED = contradicts (normal filter).</li>
         </ul></div>
       </div>
     </div>
     <div class="guide-full"><h2>Step By Step — How To Place A Trade</h2>
       <div class="step-list" style="margin-top:12px">
-        <div class="step"><div class="step-num">1</div><div class="step-text"><strong>Wait for CONFIRMED + high RR signals</strong> — Look for MTF: CONFIRMED, RR ≥ 2.0, Confidence ≥ 7/10.</div></div>
-        <div class="step"><div class="step-num">2</div><div class="step-text"><strong>Open your platform and search the asset</strong> — E.g. BTC/USD on Plus500, AAPL on Alpaca.</div></div>
-        <div class="step"><div class="step-num">3</div><div class="step-text"><strong>Size your trade</strong> — Risk 2–5% of account per trade. With R500 that's R10–R25.</div></div>
+        <div class="step"><div class="step-num">1</div><div class="step-text"><strong>Wait for CONFIRMED + high RR signals</strong> — Look for MTF: CONFIRMED, RR 2.0 or higher, Confidence 7/10 or higher.</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-text"><strong>Open your platform and search the asset</strong> — e.g. BTC/USD on Plus500, AAPL on Alpaca.</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-text"><strong>Size your trade</strong> — Risk 2-5% of account per trade. With R500 that is R10-R25.</div></div>
         <div class="step"><div class="step-num">4</div><div class="step-text"><strong>Set Stop Loss and Take Profit</strong> — Use the exact values the bot provides. Always. No exceptions.</div></div>
-        <div class="step"><div class="step-num">5</div><div class="step-text"><strong>Open the trade and let it run</strong> — Trust your levels. Don't move your stop loss.</div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-text"><strong>Open the trade and let it run</strong> — Trust your levels. Do not move your stop loss.</div></div>
         <div class="step"><div class="step-num">6</div><div class="step-text"><strong>Journal every trade</strong> — The Trade Journal tab auto-records paper trades. Add manual trades too.</div></div>
       </div>
     </div>
@@ -1275,9 +1482,9 @@ tbody tr:hover{background:var(--surface2)}
       <div class="rules-grid">
         <div class="rule"><strong>Max 5% per trade</strong>Never risk more than 5% of your account on one trade</div>
         <div class="rule"><strong>Always set a stop loss</strong>No exceptions. Ever. Protects your account.</div>
-        <div class="rule"><strong>Only trade CONFIRMED signals</strong>MTF confirmed + RR ≥ 2 = much higher win rate</div>
-        <div class="rule"><strong>Never chase losses</strong>If a trade goes wrong, step back. Don't revenge trade.</div>
-        <div class="rule"><strong>Aim for RR ≥ 2</strong>You can be wrong 40% of the time and still be profitable</div>
+        <div class="rule"><strong>Only trade CONFIRMED signals</strong>MTF confirmed + RR 2 or higher = much higher win rate</div>
+        <div class="rule"><strong>Never chase losses</strong>If a trade goes wrong, step back. Do not revenge trade.</div>
+        <div class="rule"><strong>Aim for RR 2 or higher</strong>You can be wrong 40% of the time and still be profitable</div>
         <div class="rule"><strong>Quality over quantity</strong>2 great trades a week beats 20 bad ones every time</div>
       </div>
     </div>
@@ -1285,7 +1492,7 @@ tbody tr:hover{background:var(--surface2)}
 </div>
 
 <script>
-let signals=[], historyData=[], journalData=[];
+let signals=[], historyData=[], journalData=[], healthData={};
 let sortKey='profitability', sortAsc=false;
 let historySortKey='date', historySortAsc=false;
 let theme='dark';
@@ -1300,9 +1507,10 @@ function switchTab(tab, e){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+tab).classList.add('active');
   if(e) e.target.classList.add('active');
-  if(tab==='history') loadHistory();
+  if(tab==='history')     loadHistory();
   if(tab==='performance') loadPerformance();
-  if(tab==='journal') loadJournal();
+  if(tab==='journal')     loadJournal();
+  if(tab==='health')      loadHealth();
 }
 
 function sc(score){
@@ -1312,14 +1520,14 @@ function sc(score){
 }
 
 function breakoutBadge(b){
-  if(b==='BULLISH_BREAKOUT') return '<span class="badge-pill badge-bull">▲ Bull</span>';
-  if(b==='BEARISH_BREAKOUT') return '<span class="badge-pill badge-bear">▼ Bear</span>';
+  if(b==='BULLISH_BREAKOUT') return '<span class="badge-pill badge-bull">Bull</span>';
+  if(b==='BEARISH_BREAKOUT') return '<span class="badge-pill badge-bear">Bear</span>';
   return '<span class="badge-pill badge-none">—</span>';
 }
 
 function mtfBadge(m){
-  if(m==='CONFIRMED') return '<span class="badge-pill badge-bull">✓ Conf</span>';
-  if(m==='REJECTED')  return '<span class="badge-pill badge-bear">✗ Rej</span>';
+  if(m==='CONFIRMED') return '<span class="badge-pill badge-bull">Confirmed</span>';
+  if(m==='REJECTED')  return '<span class="badge-pill badge-bear">Rejected</span>';
   return '<span class="badge-pill badge-none">N/A</span>';
 }
 
@@ -1451,12 +1659,141 @@ function renderJournal(){
   </tr>`).join('');
 }
 
+// ── HEALTH ICONS per function ──────────────────────────────────────
+const HEALTH_ICONS = {
+  scanner:            '🔍',
+  crypto_fetch:       '🪙',
+  stock_fetch:        '📈',
+  forex_fetch:        '💱',
+  indicators:         '📊',
+  ai_analysis:        '🤖',
+  ai_cache:           '⚡',
+  mtf_confirm:        '🕐',
+  signal_check:       '🎯',
+  telegram_send:      '📤',
+  telegram_commands:  '📱',
+  paper_trade:        '📝',
+  csv_write:          '💾',
+  csv_read:           '📂',
+  unit_tests:         '🧪',
+  web_server:         '🌐',
+  alpaca_connection:  '🦙',
+  exchange_connection:'🔗',
+};
+
+const HEALTH_LABELS = {
+  scanner:            'Market Scanner',
+  crypto_fetch:       'Crypto Data Fetch',
+  stock_fetch:        'Stock Data Fetch',
+  forex_fetch:        'Forex Data Fetch',
+  indicators:         'Technical Indicators',
+  ai_analysis:        'AI Analysis (Groq)',
+  ai_cache:           'AI Response Cache',
+  mtf_confirm:        'Multi-Timeframe Check',
+  signal_check:       'Signal Filter',
+  telegram_send:      'Telegram Send',
+  telegram_commands:  'Telegram Commands',
+  paper_trade:        'Paper Trading',
+  csv_write:          'CSV Write',
+  csv_read:           'CSV Read',
+  unit_tests:         'Unit Tests',
+  web_server:         'Web Server',
+  alpaca_connection:  'Alpaca Connection',
+  exchange_connection:'Exchange Connection',
+};
+
+function renderHealth(data){
+  healthData = data;
+  const now = new Date().toLocaleTimeString();
+  document.getElementById('healthLastFetch').textContent = now;
+
+  const counts = {ok:0, warn:0, error:0, idle:0};
+  Object.values(data).forEach(v => { counts[v.status] = (counts[v.status]||0)+1; });
+
+  // Banner
+  const total = Object.keys(data).length;
+  const banner = document.getElementById('healthBanner');
+  const bannerIcon = document.getElementById('healthBannerIcon');
+  const bannerTitle = document.getElementById('healthBannerTitle');
+  const bannerSub = document.getElementById('healthBannerSub');
+  if(counts.error > 0){
+    banner.style.borderColor = 'var(--red)';
+    bannerIcon.textContent = '✕';
+    bannerIcon.style.color = 'var(--red)';
+    bannerTitle.textContent = `${counts.error} function${counts.error>1?'s':''} in error state`;
+    bannerSub.textContent   = `${counts.ok} OK, ${counts.warn} warnings, ${counts.idle} idle of ${total} functions`;
+  } else if(counts.warn > 0){
+    banner.style.borderColor = 'var(--yellow)';
+    bannerIcon.textContent = '⚠';
+    bannerIcon.style.color = 'var(--yellow)';
+    bannerTitle.textContent = `${counts.warn} warning${counts.warn>1?'s':''}`;
+    bannerSub.textContent   = `${counts.ok} OK, ${counts.idle} idle — system running`;
+  } else if(counts.ok > 0){
+    banner.style.borderColor = 'var(--green)';
+    bannerIcon.textContent = '✓';
+    bannerIcon.style.color = 'var(--green)';
+    bannerTitle.textContent = 'All systems operating normally';
+    bannerSub.textContent   = `${counts.ok} functions OK, ${counts.idle} idle`;
+  } else {
+    banner.style.borderColor = 'var(--muted)';
+    bannerIcon.textContent = '○';
+    bannerIcon.style.color = 'var(--muted)';
+    bannerTitle.textContent = 'System starting up';
+    bannerSub.textContent   = 'Functions will activate on first scan';
+  }
+
+  // Summary pills
+  const pills = document.getElementById('healthPills');
+  pills.innerHTML = [
+    counts.ok    ? `<div class="h-pill h-pill-ok"><span class="status-dot-sm ok"></span>${counts.ok} OK</div>` : '',
+    counts.warn  ? `<div class="h-pill h-pill-warn"><span class="status-dot-sm warn"></span>${counts.warn} Warning</div>` : '',
+    counts.error ? `<div class="h-pill h-pill-error"><span class="status-dot-sm error"></span>${counts.error} Error</div>` : '',
+    counts.idle  ? `<div class="h-pill h-pill-idle"><span class="status-dot-sm idle"></span>${counts.idle} Idle</div>` : '',
+  ].join('');
+
+  // Cards — errors first, then warns, then ok, then idle
+  const order = ['error','warn','ok','idle'];
+  const entries = Object.entries(data).sort((a,b)=>{
+    return order.indexOf(a[1].status) - order.indexOf(b[1].status);
+  });
+
+  const grid = document.getElementById('healthGrid');
+  grid.innerHTML = entries.map(([key, v]) => {
+    const icon  = HEALTH_ICONS[key]  || '⬤';
+    const label = HEALTH_LABELS[key] || key;
+    return `
+    <div class="health-card status-${v.status}">
+      <div class="health-icon">${icon}</div>
+      <div class="health-body">
+        <div class="health-name">
+          <span class="status-dot-sm ${v.status}"></span>
+          ${label}
+        </div>
+        <div class="health-msg">${v.message || '—'}</div>
+        <div class="health-meta">
+          <span class="health-time">Last: ${v.last_run || 'Never'}</span>
+          ${v.count > 0 ? `<span class="health-count">${v.count} calls</span>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function loadHealth(){
+  fetch('/health_full').then(r=>r.json()).then(data=>{
+    renderHealth(data);
+  }).catch(err=>{
+    document.getElementById('healthGrid').innerHTML =
+      `<div style="color:var(--red);font-size:12px;padding:20px">Failed to load health data: ${err}</div>`;
+  });
+}
+
 function loadSignals(){
   fetch('/signals').then(r=>r.json()).then(data=>{
     signals=data.signals||[];
     document.getElementById('statCurrent').textContent=signals.length;
     document.getElementById('statTotal').textContent=data.total||0;
-    document.getElementById('statAssets').textContent=data.asset_count||'—';
+    document.getElementById('statAssets').textContent=data.asset_count||'150';
     document.getElementById('statPnl').textContent=data.daily_pnl!=null?(data.daily_pnl>=0?'+':'')+data.daily_pnl:'—';
     document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
     renderSignals();
@@ -1476,7 +1813,12 @@ function loadJournal(){
 }
 
 loadSignals();
-setInterval(loadSignals,30000);
+setInterval(loadSignals, 30000);
+setInterval(()=>{
+  if(document.getElementById('tab-health').classList.contains('active')){
+    loadHealth();
+  }
+}, 15000);
 </script>
 </body>
 </html>"""
@@ -1487,12 +1829,13 @@ setInterval(loadSignals,30000);
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         routes = {
-            '/':        ('text/html',         lambda: DASHBOARD_HTML.encode()),
-            '/signals': ('application/json',  self._signals),
-            '/history': ('application/json',  self._history),
-            '/stats':   ('application/json',  self._stats),
-            '/journal': ('application/json',  self._journal),
-            '/health':  ('application/json',  self._health),
+            '/':            ('text/html',        lambda: DASHBOARD_HTML.encode()),
+            '/signals':     ('application/json', self._signals),
+            '/history':     ('application/json', self._history),
+            '/stats':       ('application/json', self._stats),
+            '/journal':     ('application/json', self._journal),
+            '/health':      ('application/json', self._health_simple),
+            '/health_full': ('application/json', self._health_full),
         }
         if self.path in routes:
             ct, fn = routes[self.path]
@@ -1525,56 +1868,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _journal(self):
         return json.dumps(load_trade_journal())
 
-    def _health(self):
-        return json.dumps({'status': 'ok', 'last_scan': last_scan_time, 'signals': len(all_signals)})
+    def _health_simple(self):
+        with health_lock:
+            return json.dumps({'status': 'ok', 'last_scan': last_scan_time, 'signals': len(all_signals)})
+
+    def _health_full(self):
+        with health_lock:
+            return json.dumps(dict(system_health))
 
     def log_message(self, format, *args):
-        pass   # suppress default request logs
+        pass  # suppress default HTTP request logs
 
 def start_dashboard():
     port = int(os.environ.get('PORT', 8080))
     server = HTTPServer(('0.0.0.0', port), DashboardHandler)
-    log.info(f"🌐 Dashboard running on port {port}")
+    log.info("[SERVER] Dashboard running on port %d", port)
+    update_health("web_server", "ok", f"HTTP server listening on port {port}", increment=False)
     server.serve_forever()
 
 # ════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ════════════════════════════════════════════════════════════════════════════
 if __name__ == '__main__':
-    log.info("🚀 Trade Grid Analysis starting...")
+    log.info("[BOOT] Trade Grid Analysis starting — 50 crypto + 50 stocks + 50 forex = 150 assets")
 
-    # Run unit tests on startup
     run_unit_tests()
-
-    # Initialise CSV files
     init_csv()
 
-    # Start dashboard thread
     threading.Thread(target=start_dashboard, daemon=True).start()
-
-    # Start Telegram command listener thread
     threading.Thread(target=handle_telegram_commands, daemon=True).start()
-    log.info("📱 Telegram listener started")
+    log.info("[BOOT] Telegram listener thread started")
 
-    # First scan immediately
     run_scanner()
 
-    # Schedule every 2 minutes 30 seconds
-    schedule.every(2).minutes.do(run_scanner)
-    schedule.every(30).seconds.do(run_scanner)   # offset trick → runs at 0:00, 0:30, 2:00, 2:30, 4:00...
-    # Simpler direct approach:
     schedule.clear()
-    schedule.every(150).seconds.do(run_scanner)  # 150s = 2m30s exactly
+    schedule.every(150).seconds.do(run_scanner)  # 150s = 2m30s
 
-    log.info("⏰ Scanning every 2m 30s. Press Ctrl+C to stop.")
+    log.info("[BOOT] Scanning every 2m 30s. Press Ctrl+C to stop.")
 
     while True:
         try:
             schedule.run_pending()
             time.sleep(15)
         except KeyboardInterrupt:
-            log.info("👋 Shutting down Trade Grid Analysis")
+            log.info("[BOOT] Shutting down Trade Grid Analysis")
             break
         except Exception as e:
-            log.error(f"Scheduler error: {e}\n{traceback.format_exc()}")
+            log.error("[BOOT] Scheduler error: %s\n%s", e, traceback.format_exc())
             time.sleep(30)
