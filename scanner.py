@@ -206,7 +206,7 @@ def handle_telegram_commands():
 # ============================================================
 # DATA FETCHING
 # ============================================================
-def get_crypto_ohlcv(symbol: str) -> pd.DataFrame | None:
+def get_crypto_ohlcv(symbol):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe="1h", limit=500)
         df = pd.DataFrame(ohlcv, columns=["timestamp","open","high","low","close","volume"])
@@ -216,7 +216,7 @@ def get_crypto_ohlcv(symbol: str) -> pd.DataFrame | None:
         print(f"Crypto OHLCV error {symbol}: {e}")
         return None
 
-def get_alpaca_ohlcv(symbol: str) -> pd.DataFrame | None:
+def get_alpaca_ohlcv(symbol):
     try:
         bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=500).df
         if bars.empty:
@@ -241,7 +241,7 @@ def get_alpaca_ohlcv(symbol: str) -> pd.DataFrame | None:
 # ============================================================
 # INDICATORS
 # ============================================================
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def add_indicators(df):
     df = df.copy()
     df["ema20"]  = ta.trend.ema_indicator(df["close"], window=20)
     df["ema50"]  = ta.trend.ema_indicator(df["close"], window=50)
@@ -259,7 +259,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # AI ANALYSIS
 # ============================================================
 def get_ai_analysis(symbol, signal, price, ema20, ema50, ema200,
-                    rsi, macd, macd_sig, volume, vol_avg, atr) -> str | None:
+                    rsi, macd, macd_sig, volume, vol_avg, atr):
     prompt = (
         f"You are a professional trading analyst.\n\n"
         f"Pair: {symbol}\nSignal: {signal}\nPrice: {price}\n"
@@ -282,7 +282,7 @@ def get_ai_analysis(symbol, signal, price, ema20, ema50, ema200,
         print(f"AI error for {symbol}: {e}")
         return None
 
-def parse_ai_scores(text: str) -> dict:
+def parse_ai_scores(text):
     scores = {
         "confidence": 5, "profitability": 5,
         "safety": 5,     "risk": 5,
@@ -317,7 +317,7 @@ def parse_ai_scores(text: str) -> dict:
 # ============================================================
 # SIGNAL CHECK  (the core function — fully implemented)
 # ============================================================
-def check_signal(symbol: str, df, asset_type: str):
+def check_signal(symbol, df, asset_type):
     global total_signals_found, all_signals
 
     if df is None or df.empty or len(df) < 210:
@@ -418,10 +418,7 @@ def check_signal(symbol: str, df, asset_type: str):
 
     with signal_lock:
         all_signals.append(signal_data)
-        total_signals_found_ref = total_signals_found  # read before increment
 
-    # increment outside lock (atomic in CPython, avoids holding lock)
-    global total_signals_found
     total_signals_found += 1
 
     save_signal_to_csv(signal_data)
@@ -432,7 +429,7 @@ def check_signal(symbol: str, df, asset_type: str):
 # ============================================================
 # TELEGRAM SUMMARY
 # ============================================================
-def send_telegram_summary(signals: list):
+def send_telegram_summary(signals):
     if not signals:
         return
     top = sorted(signals, key=lambda x: x.get("profitability", 0), reverse=True)[:10]
