@@ -114,6 +114,31 @@ HIGH_QUALITY_SCORES = {
     'forex':  {'confidence': 6, 'profitability': 6},
 }
 
+# ── Signal tiers ────────────────────────────────────────────────────────────
+# STANDARD  : passes base threshold (meets HIGH_QUALITY_SCORES exactly)
+# STRONG    : confidence >= 7 AND profitability >= 7 (any asset type)
+# ELITE     : confidence >= 8 AND profitability >= 8 AND MTF confirmed AND RR >= 2
+STRONG_THRESHOLD = {'confidence': 7, 'profitability': 7}
+ELITE_THRESHOLD  = {'confidence': 8, 'profitability': 8}
+ELITE_MIN_RR     = 2.0
+
+def classify_signal_tier(confidence, profitability, rr, mtf_label):
+    """
+    Returns 'elite', 'strong', or 'standard'.
+    Elite:    conf>=8, profit>=8, RR>=2, MTF confirmed
+    Strong:   conf>=7, profit>=7
+    Standard: anything else that passed the quality filter
+    """
+    if (confidence >= ELITE_THRESHOLD['confidence']
+            and profitability >= ELITE_THRESHOLD['profitability']
+            and float(rr or 0) >= ELITE_MIN_RR
+            and mtf_label == 'CONFIRMED'):
+        return 'elite'
+    if (confidence >= STRONG_THRESHOLD['confidence']
+            and profitability >= STRONG_THRESHOLD['profitability']):
+        return 'strong'
+    return 'standard'
+
 # Paper trading config
 MAX_DAILY_LOSS_PCT  = 0.05   # 5 % of portfolio
 POSITION_RISK_PCT   = 0.02   # 2 % per trade
@@ -798,6 +823,8 @@ def check_signal(symbol, df, asset_type):
         log.info("[SIGNAL] %s below quality threshold (conf=%d, profit=%d)", symbol, confidence, profitability)
         return None
 
+    tier = classify_signal_tier(confidence, profitability, rr, mtf_label)
+
     signal_data = {
         'timestamp':     datetime.now().strftime('%H:%M:%S'),
         'date':          datetime.now().strftime('%Y-%m-%d'),
@@ -805,6 +832,7 @@ def check_signal(symbol, df, asset_type):
         'symbol':        symbol,
         'asset_type':    asset_type,
         'signal':        signal,
+        'tier':          tier,
         'price':         round(price, 4),
         'rsi':           round(rsi, 2),
         'macd':          round(macd, 6),
@@ -834,8 +862,10 @@ def check_signal(symbol, df, asset_type):
     save_signal_to_csv(signal_data)
     place_paper_trade(signal_data)
 
-    log.info("[SIGNAL] PASS %s %s | P:%d C:%d RR:%.2f MTF:%s",
-             signal, symbol, profitability, confidence, rr, mtf_label)
+    # Tier-tagged log lines — easy to grep
+    tier_tag = {"elite": "[ELITE]", "strong": "[STRONG]", "standard": "[SIGNAL]"}[tier]
+    log.info("%s PASS %s %s | P:%d C:%d RR:%.2f MTF:%s",
+             tier_tag, signal, symbol, profitability, confidence, rr, mtf_label)
     return signal_data
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -857,27 +887,94 @@ def send_telegram(message):
         log.error("[TELEGRAM] Send failed: %s", e)
         update_health("telegram_send", "error", f"Send failed: {e}")
 
+def _fmt_signal_block(s, idx):
+    """Format a single signal block for Telegram (shared by all tiers)."""
+    rr_str  = f" | RR `{s['rr_ratio']}`" if s.get('rr_ratio') else ''
+    mtf_str = f" | MTF `{s.get('mtf', 'N/A')}`"
+    return (
+        f"*#{idx} {s['signal']} {s['symbol']}*\n"
+        f"P:`{s['profitability']}/10` S:`{s['safety']}/10` "
+        f"R:`{s['risk']}/10` C:`{s['confidence']}/10`\n"
+        f"Entry:`{s['entry']}` SL:`{s['stop_loss']}` TP:`{s['take_profit']}`"
+        f"{rr_str}{mtf_str}\n"
+        f"Trend:`{s.get('trend_strength','?')}/10` "
+        f"Breakout:`{s.get('breakout','?')}`\n"
+        f"_{s['reason']}_\n\n"
+    )
+
 def send_telegram_summary(signals):
     if not signals:
         return
-    sorted_signals = sorted(signals, key=lambda x: x['profitability'], reverse=True)
-    msg = (f"*TRADE GRID ANALYSIS*\n"
-           f"High quality signals - {datetime.now().strftime('%d %b %Y %H:%M')}\n\n")
-    for i, s in enumerate(sorted_signals[:8], 1):
-        rr_str  = f" | RR `{s['rr_ratio']}`" if s.get('rr_ratio') else ''
-        mtf_str = f" | MTF `{s.get('mtf', 'N/A')}`"
-        msg += (
-            f"*#{i} {s['signal']} {s['symbol']}*\n"
-            f"P:`{s['profitability']}/10` S:`{s['safety']}/10` "
-            f"R:`{s['risk']}/10` C:`{s['confidence']}/10`\n"
-            f"Entry:`{s['entry']}` SL:`{s['stop_loss']}` TP:`{s['take_profit']}`"
-            f"{rr_str}{mtf_str}\n"
-            f"Trend:`{s.get('trend_strength','?')}/10` "
-            f"Breakout:`{s.get('breakout','?')}`\n"
-            f"_{s['reason']}_\n\n"
+
+    elite    = [s for s in signals if s.get('tier') == 'elite']
+    strong   = [s for s in signals if s.get('tier') == 'strong']
+    standard = [s for s in signals if s.get('tier') == 'standard']
+
+    ts = datetime.now().strftime('%d %b %Y %H:%M')
+
+    # ── ELITE signals — one dedicated alert per signal ──────────────────────
+    for s in sorted(elite, key=lambda x: x['profitability'], reverse=True):
+        dir_arrow = "BUY  (LONG)" if s['signal'] == 'BUY' else "SELL (SHORT)"
+        msg = (
+            f"*=== ELITE SIGNAL ===*\n"
+            f"*{dir_arrow}: {s['symbol']}*\n"
+            f"_{ts}_\n\n"
+            f"*Scores*\n"
+            f"Profitability: `{s['profitability']}/10`\n"
+            f"Confidence:    `{s['confidence']}/10`\n"
+            f"Safety:        `{s['safety']}/10`\n"
+            f"Risk:          `{s['risk']}/10`\n"
+            f"Trend:         `{s.get('trend_strength','?')}/10`\n"
+            f"RR Ratio:      `{s.get('rr_ratio','?')}`\n\n"
+            f"*Levels*\n"
+            f"Entry:      `{s['entry']}`\n"
+            f"Stop Loss:  `{s['stop_loss']}`\n"
+            f"Take Profit:`{s['take_profit']}`\n\n"
+            f"MTF: `{s.get('mtf','?')}` | Breakout: `{s.get('breakout','?')}`\n\n"
+            f"*Reason:* _{s['reason']}_\n\n"
+            f"*This is a top-tier setup. Consider sizing up.*"
         )
-    msg += "_Open Trade Grid dashboard for full rankings_"
-    send_telegram(msg)
+        send_telegram(msg)
+
+    # ── STRONG signals — grouped in one message ──────────────────────────────
+    if strong:
+        strong_sorted = sorted(strong, key=lambda x: x['profitability'], reverse=True)
+        msg = (
+            f"*-- STRONG SIGNALS --*\n"
+            f"_{ts} | {len(strong)} setup{'s' if len(strong)!=1 else ''}_\n\n"
+        )
+        for i, s in enumerate(strong_sorted[:6], 1):
+            msg += _fmt_signal_block(s, i)
+        msg += "_Strong setups — confirmed trend alignment and solid scores._"
+        send_telegram(msg)
+
+    # ── STANDARD signals — compact digest ───────────────────────────────────
+    if standard:
+        standard_sorted = sorted(standard, key=lambda x: x['profitability'], reverse=True)
+        msg = (
+            f"*Trade Grid — Scan Results*\n"
+            f"_{ts} | {len(standard)} standard signal{'s' if len(standard)!=1 else ''}_\n\n"
+        )
+        for i, s in enumerate(standard_sorted[:5], 1):
+            rr_str = f" RR:`{s['rr_ratio']}`" if s.get('rr_ratio') else ''
+            msg += (
+                f"*{s['signal']} {s['symbol']}* — "
+                f"P:`{s['profitability']}/10` C:`{s['confidence']}/10`{rr_str}\n"
+                f"Entry:`{s['entry']}` SL:`{s['stop_loss']}` TP:`{s['take_profit']}`\n"
+                f"_{s['reason']}_\n\n"
+            )
+        msg += "_Open the dashboard for the full list._"
+        send_telegram(msg)
+
+    # ── Summary line if multiple tiers fired ────────────────────────────────
+    tier_parts = []
+    if elite:    tier_parts.append(f"{len(elite)} elite")
+    if strong:   tier_parts.append(f"{len(strong)} strong")
+    if standard: tier_parts.append(f"{len(standard)} standard")
+    if len(tier_parts) > 1:
+        send_telegram(
+            f"*Scan complete:* {' | '.join(tier_parts)} signal{'s' if len(signals)!=1 else ''} found."
+        )
 
 def handle_telegram_commands():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
@@ -1195,6 +1292,59 @@ tbody tr:hover{background:var(--surface2)}
 .search-input:focus{outline:none;border-color:var(--accent)}.search-input::placeholder{color:var(--muted)}
 .wr-bar{height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;margin-top:4px}
 .wr-fill{height:100%;background:var(--green);border-radius:4px;transition:width .4s}
+
+/* ── SIGNAL TIER STYLES ────────────────────────────────────────────── */
+/* Tier badge pill */
+.tier-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:10px;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.tier-elite   {background:linear-gradient(90deg,rgba(255,215,0,.18),rgba(255,165,0,.12));border:1px solid rgba(255,200,0,.45);color:#ffd700}
+.tier-strong  {background:rgba(124,58,237,.14);border:1px solid rgba(124,58,237,.4);color:#a78bfa}
+.tier-standard{background:rgba(113,128,150,.1);border:1px solid rgba(113,128,150,.25);color:var(--muted2)}
+
+/* Elite row — golden shimmer left border + subtle glow */
+tr.row-elite{
+  background:linear-gradient(90deg,rgba(255,200,0,.06) 0%,transparent 60%) !important;
+  border-left:3px solid #ffd700;
+  box-shadow:inset 0 0 20px rgba(255,200,0,.04);
+}
+tr.row-elite td:first-child{padding-left:9px}
+tr.row-elite:hover{background:linear-gradient(90deg,rgba(255,200,0,.1) 0%,rgba(255,255,255,.02) 60%) !important}
+
+/* Strong row — purple accent left border */
+tr.row-strong{
+  background:linear-gradient(90deg,rgba(124,58,237,.06) 0%,transparent 60%) !important;
+  border-left:3px solid #7c3aed;
+}
+tr.row-strong td:first-child{padding-left:9px}
+tr.row-strong:hover{background:linear-gradient(90deg,rgba(124,58,237,.11) 0%,rgba(255,255,255,.02) 60%) !important}
+
+/* Standard rows stay default */
+
+/* Elite signal pulse animation on the tier badge */
+@keyframes elite-pulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(255,200,0,.0)}
+  50%{box-shadow:0 0 6px 2px rgba(255,200,0,.35)}
+}
+.tier-elite{animation:elite-pulse 2.8s ease-in-out infinite}
+
+/* Tier filter bar */
+.tier-filter-btn{padding:4px 10px;background:var(--surface);border:1px solid var(--border);color:var(--muted2);border-radius:20px;cursor:pointer;font-size:11px;transition:all .15s;white-space:nowrap}
+.tier-filter-btn:hover{border-color:var(--accent);color:var(--text)}
+.tier-filter-btn.active-all     {border-color:var(--accent);color:var(--accent);background:rgba(0,212,255,.06)}
+.tier-filter-btn.active-elite   {border-color:#ffd700;color:#ffd700;background:rgba(255,200,0,.08)}
+.tier-filter-btn.active-strong  {border-color:#7c3aed;color:#a78bfa;background:rgba(124,58,237,.08)}
+.tier-filter-btn.active-standard{border-color:var(--muted);color:var(--muted2);background:rgba(113,128,150,.06)}
+
+/* Tier count badges in the stat row */
+.tier-count-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.tier-count-card{display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;border:1px solid;flex:1;min-width:100px}
+.tcc-elite  {background:rgba(255,200,0,.06);border-color:rgba(255,200,0,.25)}
+.tcc-strong {background:rgba(124,58,237,.06);border-color:rgba(124,58,237,.25)}
+.tcc-standard{background:rgba(113,128,150,.05);border-color:rgba(113,128,150,.2)}
+.tcc-num{font-size:22px;font-weight:700}
+.tcc-elite   .tcc-num{color:#ffd700}
+.tcc-strong  .tcc-num{color:#a78bfa}
+.tcc-standard .tcc-num{color:var(--muted2)}
+.tcc-lbl{font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:.6px}
 .guide-full{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
 .guide-full h2{font-size:14px;font-weight:600;color:var(--accent);margin-bottom:10px}
 .guide-full p{font-size:12px;color:var(--muted2);line-height:1.6;margin-bottom:8px}
