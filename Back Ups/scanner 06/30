@@ -11,8 +11,6 @@ import logging
 import hashlib
 import threading
 import traceback
-import re  # Ensure this is imported at the top of your file
-import pytz
 from groq import Groq
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -211,79 +209,52 @@ else:
     update_health("alpaca_connection", "warn", "Alpaca disabled (no API keys or package missing)", increment=False)
 
 # ════════════════════════════════════════════════════════════════════════════
-# # LIVE MARKET SYNC & TIMING MODULES
+# ASSET LISTS — 50 each, 150 total
 # ════════════════════════════════════════════════════════════════════════════
-def is_market_open(asset_type):
-    """Prevents processing stock/forex fields outside of legitimate trading windows."""
-    if asset_type.lower() == 'crypto':
-        return True # Crypto runs 24/7/365
-        
-    # Get standard US/Eastern market time
-    tz_ny = pytz.timezone('America/New_York')
-    now_ny = datetime.now(tz_ny)
-    
-    # Weekend Check (Saturday = 5, Sunday = 6)
-    if now_ny.weekday() >= 5:
-        return False
-        
-    if asset_type.lower() == 'stock':
-        # US Equity Core Hours: 09:30 AM to 04:00 PM EST
-        start_time = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
-        end_time = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
-        return start_time <= now_ny <= end_time
-        
-    if asset_type.lower() == 'forex':
-        # Forex closes Friday 5 PM EST and opens Sunday 5 PM EST
-        if now_ny.weekday() == 4 and now_ny.hour >= 17:
-            return False
-        if now_ny.weekday() == 6 and now_ny.hour < 17:
-            return False
-        return True
-    return True
+crypto_pairs = [
+    # Original 30
+    'BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD',
+    'BNB/USD', 'ADA/USD', 'AVAX/USD', 'LINK/USD', 'INJ/USD',
+    'FET/USD', 'ARB/USD', 'OP/USD', 'DOT/USD', 'ATOM/USD',
+    'LTC/USD', 'UNI/USD', 'NEAR/USD', 'AAVE/USD', 'APT/USD',
+    'SUI/USD', 'ZEC/USD', 'BCH/USD', 'ETC/USD', 'XLM/USD',
+    'FIL/USD', 'HBAR/USD', 'SEI/USD', 'JUP/USD', 'WLD/USD',
+    # Added 20 to reach 50
+    'TRX/USD', 'TON/USD', 'SHIB/USD', 'PEPE/USD', 'BONK/USD',
+    'IMX/USD', 'GRT/USD', 'LDO/USD', 'SNX/USD', 'CRV/USD',
+    'ENS/USD', 'MANA/USD', 'SAND/USD', 'AXS/USD', 'BLUR/USD',
+    'PENDLE/USD', 'TIA/USD', 'PYTH/USD', 'ALT/USD', 'STRK/USD',
+]  # 50 total
 
-def fetch_live_stock_universe():
-    """Dynamically grabs actively traded, shortable, liquid US stocks directly from Alpaca."""
-    global alpaca
-    # Fallback list if Alpaca initialization isn't ready or fails
-    fallback = ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'NFLX', 'PLTR']
-    try:
-        if 'alpaca' not in globals() or alpaca is None:
-            return fallback
-        assets = alpaca.list_assets(status='active', asset_class='us_equity')
-        liquid_symbols = [a.symbol for a in assets if a.tradable and a.shortable and a.marginable]
-        
-        # Keep our scope tight to major high-volume stocks for speed
-        focus_universe = {'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'NFLX', 'AMD', 'PLTR', 'COIN', 'INTC', 'BABA', 'AMD', 'SPY'}
-        active_watchlist = [sym for sym in liquid_symbols if sym in focus_universe]
-        return active_watchlist if active_watchlist else fallback
-    except Exception as e:
-        log.error(f"[SYNC] Stock discovery failed, using fallback: {e}")
-        return fallback
+stock_pairs = [
+    # Original 30
+    'AAPL', 'TSLA', 'NVDA', 'AMZN', 'META',
+    'GOOGL', 'MSFT', 'AMD', 'NFLX', 'COIN',
+    'SPY', 'QQQ', 'DIA', 'GLD', 'SLV',
+    'USO', 'TLT', 'SOFI', 'RIOT', 'MARA',
+    'MSTR', 'ARKK', 'XLK', 'XLF', 'XLE',
+    'VTI', 'VOO', 'UPRO', 'TQQQ', 'BRK.B',
+    # Added 20 to reach 50
+    'PLTR', 'HOOD', 'RBLX', 'SNAP', 'UBER',
+    'LYFT', 'ABNB', 'PINS', 'SHOP', 'PYPL',
+    'SQ', 'ROKU', 'ZM', 'SNOW', 'DKNG',
+    'LCID', 'RIVN', 'NIO', 'BIDU', 'BILI',
+]  # 50 total
 
-def fetch_live_crypto_universe():
-    """Queries your CCXT exchange instance to find live liquid spot pairs."""
-    global exchange
-    fallback = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'LINK/USDT', 'AVAX/USDT']
-    try:
-        if 'exchange' not in globals() or exchange is None:
-            return fallback
-        markets = exchange.load_markets()
-        active_pairs = []
-        for symbol, market in markets.items():
-            if market.get('active') and market.get('spot') and market.get('quote') in ['USDT', 'USD']:
-                base = market.get('base', '')
-                if not any(t in base for t in ['UP', 'DOWN', 'BEAR', 'BULL', '3L', '3S']):
-                    active_pairs.append(symbol)
-        
-        majors = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT']
-        final_list = [p for p in active_pairs if p in majors]
-        for pair in active_pairs:
-            if pair not in final_list and len(final_list) < 15:
-                final_list.append(pair)
-        return final_list if final_list else fallback
-    except Exception as e:
-        log.error(f"[SYNC] Crypto discovery failed, using fallback: {e}")
-        return fallback
+forex_pairs = [
+    # Original 20
+    'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD',
+    'USDCAD', 'NZDUSD', 'EURGBP', 'EURJPY', 'GBPJPY',
+    'AUDJPY', 'CADJPY', 'EURAUD', 'GBPAUD', 'NZDCAD',
+    'NZDCHF', 'GBPCAD', 'CADCHF', 'AUDCAD', 'AUDCHF',
+    # Added 30 to reach 50
+    'EURCAD', 'EURCHF', 'EURNZD', 'GBPCHF', 'GBPNZD',
+    'AUDNZD', 'NZDJPY', 'CHFJPY', 'SGDJPY', 'USDHKD',
+    'USDSGD', 'USDMXN', 'USDZAR', 'USDNOK', 'USDSEK',
+    'USDDKK', 'USDPLN', 'USDCZK', 'USDHUF', 'USDTRY',
+    'EURPLN', 'EURSEK', 'EURNOK', 'EURDKK', 'EURCZK',
+    'GBPSEK', 'GBPNOK', 'GBPDKK', 'GBPPLN', 'AUDSGD',
+]  # 50 total
 
 # ════════════════════════════════════════════════════════════════════════════
 # CSV HELPERS
@@ -1190,65 +1161,47 @@ def scan_asset(args):
         return None
 
 def run_scanner():
-    """Main execution loop that updates asset lists and scans open markets safely."""
-    log.info("[SCANNER] Starting market analysis grid loop...")
-    update_health("scanner_loop", "ok", "Loop execution started")
+    global all_signals, last_scan_time, scan_count, daily_pnl
 
-    # 1. Dynamically update asset pools from live market registries
-    crypto_pairs = fetch_live_crypto_universe()
-    stock_pairs  = fetch_live_stock_universe()
-    forex_pairs  = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD'] # Forex registers are historically static
+    if datetime.now().hour == 0 and datetime.now().minute < 3:
+        daily_pnl = 0.0
 
-    # ==========================================
-    # PHASE A: CRYPTO SCANNING (24/7)
-    # ==========================================
-    if is_market_open('crypto'):
-        log.info(f"[SCANNER] Processing {len(crypto_pairs)} live Crypto assets...")
-        for symbol in crypto_pairs:
-            try:
-                df = get_crypto_ohlcv(symbol)
-                if df is not None:
-                    df = add_indicators(df)
-                    check_signal(symbol, df, "Crypto")
-            except Exception as e:
-                log.error(f"[CRASH] Failed scanning Crypto pair {symbol}: {e}")
+    scan_count += 1
+    last_scan_time = datetime.now().strftime('%d %b %Y %H:%M')
+    log.info("[SCAN] Starting scan #%d at %s", scan_count, last_scan_time)
+    update_health("scanner", "ok", f"Scan #{scan_count} started")
+
+    tasks = []
+    for sym in crypto_pairs:
+        tasks.append((sym, 'crypto', get_crypto_ohlcv))
+    if ALPACA_AVAILABLE:
+        for sym in stock_pairs:
+            tasks.append((sym, 'stock', get_alpaca_ohlcv))
+        for sym in forex_pairs:
+            tasks.append((sym, 'forex', get_forex_ohlcv))
+
+    new_signals = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(scan_asset, t): t for t in tasks}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                new_signals.append(result)
+
+    with signal_lock:
+        all_signals = new_signals
+
+    if all_signals:
+        send_telegram_summary(all_signals)
+        log.info("[SCAN] Complete - %d high quality signals found", len(all_signals))
+        update_health("scanner", "ok",
+                      f"Scan #{scan_count} complete - {len(all_signals)} signals from {len(tasks)} assets")
     else:
-        log.info("[SCANNER] Crypto markets are completely offline (Should never happen).")
+        log.info("[SCAN] Complete - no high quality signals this scan")
+        update_health("scanner", "ok",
+                      f"Scan #{scan_count} complete - 0 signals (normal, filters are strict)")
 
-    # ==========================================
-    # PHASE B: STOCK SCANNING (US Market Hours Only)
-    # ==========================================
-    if is_market_open('stock'):
-        log.info(f"[SCANNER] Processing {len(stock_pairs)} live Stock assets...")
-        for symbol in stock_pairs:
-            try:
-                df = get_alpaca_ohlcv(symbol)
-                if df is not None:
-                    df = add_indicators(df)
-                    check_signal(symbol, df, "Stock")
-            except Exception as e:
-                log.error(f"[CRASH] Failed scanning Stock asset {symbol}: {e}")
-    else:
-        log.info("[SCANNER] US Stock markets are currently CLOSED. Skipping execution loop to save API bandwidth.")
-
-    # ==========================================
-    # PHASE C: FOREX SCANNING (Weekday Institutional Hours Only)
-    # ==========================================
-    if is_market_open('forex'):
-        log.info(f"[SCANNER] Processing {len(forex_pairs)} live Forex assets...")
-        for symbol in forex_pairs:
-            try:
-                df = get_forex_ohlcv(symbol)
-                if df is not None:
-                    df = add_indicators(df)
-                    check_signal(symbol, df, "Forex")
-            except Exception as e:
-                log.error(f"[CRASH] Failed scanning Forex asset {symbol}: {e}")
-    else:
-        log.info("[SCANNER] FX markets are currently CLOSED for the weekend. Skipping execution loop.")
-
-    log.info("[SCANNER] Market analysis cycle completed successfully. Standing by for scheduler refresh.")
-    update_health("scanner_loop", "ok", f"Last full run finished at {datetime.now().strftime('%H:%M:%S')}")
+    log.info("[SCAN] Monitored %d assets total", len(tasks))
 
 # ════════════════════════════════════════════════════════════════════════════
 # UNIT TESTS
