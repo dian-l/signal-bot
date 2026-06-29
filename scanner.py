@@ -366,41 +366,69 @@ def with_retry(fn, retries=3, delay=2, label=""):
 # ════════════════════════════════════════════════════════════════════════════
 # DATA FETCHING
 # ════════════════════════════════════════════════════════════════════════════
+def clean_and_validate_df(df):
+    """Safely sanitizes dataframes before feeding them to indicator functions."""
+    if df is None or df.empty:
+        return None
+    try:
+        df = df.copy()
+        # Ensure standard OHLCV columns exist
+        required = ['open', 'high', 'low', 'close', 'volume']
+        for col in required:
+            if col not in df.columns:
+                return None
+            # Force convert to numeric values, turning faulty text into NaN
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Drop rows with missing vital data
+        df = df.dropna(subset=required)
+        
+        # Handle timestamp/indexing
+        if 'timestamp' in df.columns:
+            df = df.sort_values('timestamp')
+            df = df.drop_duplicates(subset=['timestamp'])
+        else:
+            df = df.sort_index()
+            df = df.loc[~df.index.duplicated(keep='last')]
+            
+        return df if len(df) >= 20 else None
+    except Exception as e:
+        log.error("[CLEANER] Processing failed: %s", e)
+        return None
+
 def get_crypto_ohlcv(symbol, timeframe='1h', limit=500):
     def _fetch():
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        if not ohlcv:
+            return None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
     result = with_retry(_fetch, label=symbol)
-    if result is not None:
-        update_health("crypto_fetch", "ok", f"Fetched {symbol} ({timeframe})")
+    cleaned = clean_and_validate_df(result)
+    if cleaned is not None:
+        update_health("crypto_fetch", "ok", f"Fetched & cleaned {symbol} ({timeframe})")
     else:
-        update_health("crypto_fetch", "warn", f"Failed to fetch {symbol} ({timeframe})")
-    return result
-
-def get_crypto_ohlcv_multi(symbol, timeframes=('1h', '4h')):
-    results = {}
-    for tf in timeframes:
-        df = get_crypto_ohlcv(symbol, timeframe=tf)
-        if df is not None and not df.empty:
-            results[tf] = df
-    return results
+        update_health("crypto_fetch", "warn", f"Failed crypto fetch/clean for {symbol}")
+    return cleaned
 
 def get_alpaca_ohlcv(symbol):
     if not alpaca:
         return None
     def _fetch():
         bars = alpaca.get_bars(symbol, tradeapi.rest.TimeFrame.Hour, limit=500).df
+        if bars.empty:
+            return None
         col_map = {'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}
         bars = bars.rename(columns={k: v for k, v in col_map.items() if k in bars.columns})
         return bars
     result = with_retry(_fetch, label=symbol)
-    if result is not None:
+    cleaned = clean_and_validate_df(result)
+    if cleaned is not None:
         update_health("stock_fetch", "ok", f"Fetched stock {symbol}")
     else:
-        update_health("stock_fetch", "warn", f"Failed to fetch stock {symbol}")
-    return result
+        update_health("stock_fetch", "warn", f"Failed stock fetch/clean for {symbol}")
+    return cleaned
 
 def get_forex_ohlcv(symbol):
     if not alpaca:
@@ -413,11 +441,12 @@ def get_forex_ohlcv(symbol):
         bars = bars.rename(columns={k: v for k, v in col_map.items() if k in bars.columns})
         return bars
     result = with_retry(_fetch, label=symbol)
-    if result is not None:
+    cleaned = clean_and_validate_df(result)
+    if cleaned is not None:
         update_health("forex_fetch", "ok", f"Fetched forex {symbol}")
     else:
-        update_health("forex_fetch", "warn", f"Failed to fetch forex {symbol}")
-    return result
+        update_health("forex_fetch", "warn", f"Failed forex fetch/clean for {symbol}")
+    return cleaned
 
 # ════════════════════════════════════════════════════════════════════════════
 # INDICATORS
