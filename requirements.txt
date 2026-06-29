@@ -1,7 +1,9 @@
 ccxt
 pandas
+numpy
 ta
 requests
 schedule
 groq
+pytz
 alpaca-trade-api
