@@ -627,8 +627,8 @@ def parse_ai_scores(ai_text):
     scores = {
         'confidence': 5, 'profitability': 5,
         'safety': 5, 'risk': 5,
-        'entry': 0, 'stop_loss': 0,
-        'take_profit': 0, 'reason': ''
+        'entry': '0', 'stop_loss': '0',
+        'take_profit': '0', 'reason': ''
     }
     if not ai_text:
         return scores
@@ -637,27 +637,35 @@ def parse_ai_scores(ai_text):
             line = line.strip()
             if not line or ':' not in line:
                 continue
+            
+            # Clean out markdown bold symbols like **Confidence**:
+            line = line.replace('*', '')
             key, _, val = line.partition(':')
-            key = key.strip()
+            key = key.strip().lower()
             val = val.strip()
-            if key == 'Confidence':
-                scores['confidence'] = int(val.split('/')[0])
-            elif key == 'Profitability':
-                scores['profitability'] = int(val.split('/')[0])
-            elif key == 'Safety':
-                scores['safety'] = int(val.split('/')[0])
-            elif key == 'Risk':
-                scores['risk'] = int(val.split('/')[0])
-            elif key == 'Entry':
+            
+            if 'confidence' in key:
+                match = re.search(r'(\d+)', val)
+                if match: scores['confidence'] = int(match.group(1))
+            elif 'profitability' in key:
+                match = re.search(r'(\d+)', val)
+                if match: scores['profitability'] = int(match.group(1))
+            elif 'safety' in key:
+                match = re.search(r'(\d+)', val)
+                if match: scores['safety'] = int(match.group(1))
+            elif 'risk' in key:
+                match = re.search(r'(\d+)', val)
+                if match: scores['risk'] = int(match.group(1))
+            elif 'entry' in key:
                 scores['entry'] = val
-            elif key == 'Stop Loss':
+            elif 'stop loss' in key:
                 scores['stop_loss'] = val
-            elif key == 'Take Profit':
+            elif 'take profit' in key:
                 scores['take_profit'] = val
-            elif key == 'Reason':
+            elif 'reason' in key:
                 scores['reason'] = val
-    except Exception:
-        pass
+    except Exception as e:
+        log.error("[PARSE ERROR] Failed parsing AI fields: %s", e)
     return scores
 
 # ════════════════════════════════════════════════════════════════════════════
